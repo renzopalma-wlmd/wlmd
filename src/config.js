@@ -4,7 +4,7 @@ const REQUIRED_VARS = [
   'SLACK_BOT_TOKEN',
   'SLACK_SIGNING_SECRET',
   'SUPABASE_URL',
-  'SUPABASE_ANON_KEY',
+  'SUPABASE_SERVICE_ROLE_KEY',
   'GEMINI_API_KEY',
 ];
 
@@ -24,7 +24,10 @@ module.exports = {
   },
   supabase: {
     url: process.env.SUPABASE_URL,
-    anonKey: process.env.SUPABASE_ANON_KEY,
+    // service_role bypasses RLS — this must never be sent to a client/browser,
+    // only used from this server. knowledge_context has RLS enabled with no
+    // policies, so the anon key has zero access even if it leaks.
+    serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
   },
   gemini: {
     apiKey: process.env.GEMINI_API_KEY,

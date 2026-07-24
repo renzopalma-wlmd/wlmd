@@ -20,8 +20,8 @@ ClickUp Events ──→ Express Webhook ──→ Gemini Embed ──→ Supaba
 
 ## Prerequisites
 
-- Node.js 18+
-- A [Supabase](https://supabase.com) project
+- Node.js 22+
+- A [Supabase](https://supabase.com) project — grab the **service_role** key (Settings → API), not the anon key; the app runs server-side only and the `knowledge_context` table has RLS enabled with no anon-accessible policies
 - A [Slack App](https://api.slack.com/apps) with the following:
   - Bot Token Scopes: `app_mentions:read`, `channels:history`, `chat:write`, `groups:history`
   - Event Subscriptions: `app_mention`, `message.channels`, `message.groups`
