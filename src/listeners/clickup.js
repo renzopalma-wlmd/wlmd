@@ -13,8 +13,8 @@ const logger = require('../utils/logger');
  */
 function verifySignature(rawBody, signature) {
   if (!config.clickup.webhookSecret) {
-    logger.warn('ClickUp webhook secret not configured — skipping signature verification');
-    return true;
+    logger.warn('ClickUp webhook secret not configured — rejecting request');
+    return false;
   }
 
   if (!signature) return false;
