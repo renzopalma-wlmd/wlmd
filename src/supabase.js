@@ -2,7 +2,7 @@ const { createClient } = require('@supabase/supabase-js');
 const config = require('./config');
 const logger = require('./utils/logger');
 
-const supabase = createClient(config.supabase.url, config.supabase.anonKey);
+const supabase = createClient(config.supabase.url, config.supabase.serviceRoleKey);
 
 /**
  * Insert a context entry into the knowledge_context table.

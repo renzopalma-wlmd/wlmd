@@ -30,7 +30,13 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_embedding ON knowledge_context
   USING hnsw (embedding vector_cosine_ops)
   WITH (m = 16, ef_construction = 64);
 
--- 5. Create the similarity search function (RAG Engine)
+-- 5. Lock the table down by default.
+-- The app connects with the service_role key (bypasses RLS), so no
+-- policies are defined here on purpose: anon/authenticated clients
+-- (e.g. if the anon key ever leaks) get zero access to this table.
+ALTER TABLE knowledge_context ENABLE ROW LEVEL SECURITY;
+
+-- 6. Create the similarity search function (RAG Engine)
 -- Called via supabase.rpc('match_context', { query_embedding, match_threshold, match_count })
 CREATE OR REPLACE FUNCTION match_context (
   query_embedding VECTOR(768),
