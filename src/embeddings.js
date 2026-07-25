@@ -8,7 +8,7 @@ const EMBEDDING_MODEL = 'gemini-embedding-2';
 const EMBEDDING_DIMENSIONS = 1536;
 
 /**
- * Generate a 768-dimensional embedding for the given text.
+ * Generate a 1536-dimensional embedding for the given text.
  * @param {string} text - Text to embed
  * @returns {Promise<number[]>} Embedding vector
  */

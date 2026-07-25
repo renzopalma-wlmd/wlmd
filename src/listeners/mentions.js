@@ -20,9 +20,11 @@ function registerMentionListener(app) {
       const question = event.text.replace(/<@[A-Z0-9]+>/g, '').trim();
 
       if (!question || question.length < 3) {
-        await say({
+        // Reuse the thinking message instead of leaving it orphaned in-thread
+        await client.chat.update({
+          channel: event.channel,
+          ts: thinkingMsg.ts,
           text: "👋 Hey! Ask me a question about your workspace — I'll search through Slack messages and ClickUp tasks to find the answer.",
-          thread_ts: event.ts,
         });
         return;
       }

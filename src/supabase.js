@@ -12,7 +12,7 @@ const supabase = createClient(config.supabase.url, config.supabase.serviceRoleKe
  * @param {string} [params.authorId] - User ID
  * @param {string} params.content - Text content
  * @param {Object} [params.metadata] - Additional metadata
- * @param {number[]} [params.embedding] - 768-dim embedding vector
+ * @param {number[]} [params.embedding] - 1536-dim embedding vector
  * @returns {Promise<Object>} Inserted row
  */
 async function insertContext({ source, externalId, authorId, content, metadata = {}, embedding = null }) {
@@ -45,7 +45,7 @@ async function insertContext({ source, externalId, authorId, content, metadata =
 
 /**
  * Search for similar context using the match_context RPC function.
- * @param {number[]} queryEmbedding - 768-dim query embedding
+ * @param {number[]} queryEmbedding - 1536-dim query embedding
  * @param {number} [threshold=0.5] - Minimum similarity threshold
  * @param {number} [count=5] - Maximum number of results
  * @returns {Promise<Array>} Matching context entries

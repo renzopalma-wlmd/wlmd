@@ -6,7 +6,10 @@ const logger = require('./utils/logger');
 
 const ai = new GoogleGenAI({ apiKey: config.gemini.apiKey });
 
-const GENERATION_MODEL = 'gemini-2.0-flash';
+// gemini-2.0-flash is no longer granted on the free tier (429, quota limit: 0).
+// 2.5-flash is a thinking model, so maxOutputTokens must leave headroom for
+// reasoning tokens or `response.text` comes back empty.
+const GENERATION_MODEL = 'gemini-2.5-flash';
 const SIMILARITY_THRESHOLD = 0.4;
 const MAX_RESULTS = 8;
 
@@ -66,7 +69,7 @@ async function answerQuestion(question) {
     config: {
       systemInstruction: SYSTEM_PROMPT,
       temperature: 0.3,
-      maxOutputTokens: 1024,
+      maxOutputTokens: 2048,
     },
   });
 

@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS knowledge_context (
   author_id TEXT,                        -- Slack User ID or ClickUp User ID
   content TEXT NOT NULL,                 -- Message body or task description/comment
   metadata JSONB DEFAULT '{}'::jsonb,    -- Extra metadata (thread_ts, task_status, priority, etc.)
-  embedding VECTOR(768),                 -- Gemini text-embedding-004 (768 dimensions)
+  embedding VECTOR(1536),                -- Gemini gemini-embedding-2 (1536 dimensions)
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -39,7 +39,7 @@ ALTER TABLE knowledge_context ENABLE ROW LEVEL SECURITY;
 -- 6. Create the similarity search function (RAG Engine)
 -- Called via supabase.rpc('match_context', { query_embedding, match_threshold, match_count })
 CREATE OR REPLACE FUNCTION match_context (
-  query_embedding VECTOR(768),
+  query_embedding VECTOR(1536),
   match_threshold FLOAT,
   match_count INT
 )

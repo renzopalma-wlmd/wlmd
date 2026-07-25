@@ -8,12 +8,17 @@ const logger = require('../utils/logger');
  * @param {import('@slack/bolt').App} app - Slack Bolt app
  */
 function registerMessageListener(app) {
-  app.message(async ({ message }) => {
+  app.message(async ({ message, context }) => {
     // Ignore bot messages, system events, and message edits/deletes
     if (message.subtype || message.bot_id) return;
 
     // Ignore very short messages (less than 10 chars — likely not useful context)
     if (!message.text || message.text.trim().length < 10) return;
+
+    // Skip messages that mention the bot — those are questions handled by the
+    // app_mention listener. Indexing them fills the knowledge base with the
+    // questions people asked instead of the facts they're asking about.
+    if (context.botUserId && message.text.includes(`<@${context.botUserId}>`)) return;
 
     try {
       // Generate embedding for the message
