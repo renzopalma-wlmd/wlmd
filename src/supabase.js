@@ -67,6 +67,30 @@ async function searchContext(queryEmbedding, threshold = 0.5, count = 5) {
 }
 
 /**
+ * Fetch the newest context entries across every source and channel.
+ * Vector search can only rank by semantic similarity, so questions about
+ * recency ("the last 15 messages", "catch me up") need a time-ordered read
+ * instead — no embedding is involved.
+ * @param {number} [limit=15] - Max entries to return, newest first
+ * @returns {Promise<Array>}
+ */
+async function getRecentAcrossSources(limit = 15) {
+  const { data, error } = await supabase
+    .from('knowledge_context')
+    .select('id, source, external_id, content, metadata, created_at')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    logger.error('Failed to fetch recent context across sources', { error: error.message });
+    throw error;
+  }
+
+  logger.info(`Recency search returned ${data.length} results`, { limit });
+  return data;
+}
+
+/**
  * Fetch recent context entries for a specific source and external ID.
  * @param {string} source - 'slack' or 'clickup'
  * @param {string} externalId - Channel ID or Task ID
@@ -94,5 +118,6 @@ module.exports = {
   supabase,
   insertContext,
   searchContext,
+  getRecentAcrossSources,
   getRecentContext,
 };
