@@ -12,6 +12,21 @@ const ai = new GoogleGenAI({ apiKey: config.gemini.apiKey });
 // reasoning tokens or `response.text` comes back empty.
 const GENERATION_MODEL = 'gemini-2.5-flash';
 
+// Fallback chain. Gemini returns transient 503 UNAVAILABLE ("high demand")
+// often enough that a single attempt is not good enough for an interactive
+// bot — an unretried blip reaches the user as a hard error. If the primary
+// stays degraded, move down the chain rather than failing the request.
+const FALLBACK_MODELS = ['gemini-flash-latest', 'gemini-3.5-flash'];
+
+// 503/500/502/504 are capacity blips and usually clear on an immediate retry.
+const RETRYABLE_STATUSES = new Set([500, 502, 503, 504]);
+// 429 is not worth retrying in-request: Gemini's own retryDelay for an
+// exhausted quota is tens of seconds, far longer than a Slack reply can wait.
+// Switch models instead.
+const FAILOVER_STATUSES = new Set([429]);
+const ATTEMPTS_PER_MODEL = 3;
+const BASE_BACKOFF_MS = 350;
+
 // Headroom for reasoning tokens plus a long answer: enumerating a 30-message
 // recency window with a paraphrase each will not fit in 2048.
 const MAX_OUTPUT_TOKENS = 4096;
@@ -50,6 +65,96 @@ Referring to sources:
 - When the question asks you to list or enumerate messages, give each entry a short paraphrase of what it actually said. A bare list of channels and dates is useless to the reader — the substance is the point, the location is the label.
 
 Be concise and actionable. Answer the question that was asked; don't narrate the retrieval process.`;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Extract an HTTP status from a @google/genai error, which reports it either
+ * on `.status` or only inside the serialized message body.
+ * @param {Error} error
+ * @returns {number|null}
+ */
+function errorStatus(error) {
+  if (typeof error?.status === 'number') return error.status;
+  const match = String(error?.message || '').match(/"code"\s*:\s*(\d{3})/);
+  return match ? Number.parseInt(match[1], 10) : null;
+}
+
+/**
+ * Issue a single generation call. Extracted so the retry/fallback policy can be
+ * exercised against injected failures without touching the network.
+ * @param {string} model
+ * @param {string} userPrompt
+ * @returns {Promise<Object>}
+ */
+function callModel(model, userPrompt) {
+  return ai.models.generateContent({
+    model,
+    contents: userPrompt,
+    config: {
+      systemInstruction: SYSTEM_PROMPT,
+      temperature: 0.3,
+      maxOutputTokens: MAX_OUTPUT_TOKENS,
+    },
+  });
+}
+
+/**
+ * Generate content, retrying transient failures and falling back across models.
+ * Throws the last error only when every model is exhausted.
+ * @param {Object} params
+ * @param {string} params.userPrompt
+ * @param {(model: string, prompt: string) => Promise<Object>} [params.generate] - Injectable for tests
+ * @param {(ms: number) => Promise<void>} [params.wait] - Injectable for tests
+ * @returns {Promise<{response: Object, model: string, attempts: number}>}
+ */
+async function generateWithFallback({ userPrompt, generate = callModel, wait = sleep }) {
+  const chain = [GENERATION_MODEL, ...FALLBACK_MODELS];
+  let attempts = 0;
+  let lastError;
+
+  for (const model of chain) {
+    for (let attempt = 1; attempt <= ATTEMPTS_PER_MODEL; attempt++) {
+      attempts++;
+      try {
+        const response = await generate(model, userPrompt);
+        if (model !== GENERATION_MODEL || attempt > 1) {
+          logger.warn('Generation recovered after retry/fallback', { model, attempt, attempts });
+        }
+        return { response, model, attempts };
+      } catch (error) {
+        lastError = error;
+        const status = errorStatus(error);
+
+        if (FAILOVER_STATUSES.has(status)) {
+          logger.warn('Model quota exhausted — failing over', { model, status });
+          break;
+        }
+        if (!RETRYABLE_STATUSES.has(status)) {
+          logger.error('Non-retryable generation error', { model, status, error: error.message });
+          throw error;
+        }
+        if (attempt === ATTEMPTS_PER_MODEL) {
+          logger.warn('Model exhausted retries — failing over', { model, status, attempt });
+          break;
+        }
+
+        // Exponential backoff with jitter, so concurrent mentions don't retry in lockstep.
+        const delay = BASE_BACKOFF_MS * 2 ** (attempt - 1) * (0.5 + Math.random());
+        logger.warn('Transient generation error — retrying', {
+          model,
+          status,
+          attempt,
+          retryInMs: Math.round(delay),
+        });
+        await wait(delay);
+      }
+    }
+  }
+
+  logger.error('All generation models failed', { attempts, error: lastError?.message });
+  throw lastError;
+}
 
 /**
  * Detect whether a question is asking about recency rather than topic, and
@@ -158,18 +263,19 @@ async function answerQuestion(question) {
   const orderNote = intent.isRecency
     ? '\n\nThe context blocks are ordered newest first.'
     : '';
-  const userPrompt = `Context:\n${contextString}${orderNote}${countNote}\n\n---\nQuestion: ${question}`;
+
+  // State which sources are actually present. Without this the model will
+  // answer "what are the last 10 tasks?" using Slack messages, because every
+  // context block looks equally authoritative to it.
+  const present = new Set(results.map((r) => r.source));
+  const inventoryNote = `\n\nSources present in this context: ${
+    present.size ? [...present].join(', ') : 'none'
+  }. If the question asks about a source that is absent, say plainly that nothing from that source is indexed yet — do not answer it from the other source.`;
+
+  const userPrompt = `Context:\n${contextString}${orderNote}${countNote}${inventoryNote}\n\n---\nQuestion: ${question}`;
 
   // Step 4: Generate the answer
-  const response = await ai.models.generateContent({
-    model: GENERATION_MODEL,
-    contents: userPrompt,
-    config: {
-      systemInstruction: SYSTEM_PROMPT,
-      temperature: 0.3,
-      maxOutputTokens: MAX_OUTPUT_TOKENS,
-    },
-  });
+  const { response, model, attempts } = await generateWithFallback({ userPrompt });
 
   const answer = response.text || 'I was unable to generate a response. Please try again.';
   const finishReason = response.candidates?.[0]?.finishReason;
@@ -188,6 +294,8 @@ async function answerQuestion(question) {
     answerLength: answer.length,
     sourcesUsed: results.length,
     finishReason,
+    model,
+    attempts,
     thoughtsTokens: response.usageMetadata?.thoughtsTokenCount,
   });
 
@@ -208,4 +316,6 @@ async function answerQuestion(question) {
 module.exports = {
   answerQuestion,
   detectRecencyIntent,
+  generateWithFallback,
+  errorStatus,
 };
