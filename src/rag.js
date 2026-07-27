@@ -111,12 +111,12 @@ function errorStatus(error) {
  * @param {string} userPrompt
  * @returns {Promise<Object>}
  */
-function callModel(model, userPrompt) {
+function callModel(model, userPrompt, systemInstruction) {
   return ai.models.generateContent({
     model,
     contents: userPrompt,
     config: {
-      systemInstruction: SYSTEM_PROMPT,
+      systemInstruction,
       temperature: 0.3,
       maxOutputTokens: MAX_OUTPUT_TOKENS,
     },
@@ -132,7 +132,12 @@ function callModel(model, userPrompt) {
  * @param {(ms: number) => Promise<void>} [params.wait] - Injectable for tests
  * @returns {Promise<{response: Object, model: string, attempts: number}>}
  */
-async function generateWithFallback({ userPrompt, generate = callModel, wait = sleep }) {
+async function generateWithFallback({
+  userPrompt,
+  systemInstruction = SYSTEM_PROMPT,
+  generate = callModel,
+  wait = sleep,
+}) {
   const chain = [GENERATION_MODEL, ...FALLBACK_MODELS];
   let attempts = 0;
   let lastError;
@@ -141,7 +146,7 @@ async function generateWithFallback({ userPrompt, generate = callModel, wait = s
     for (let attempt = 1; attempt <= ATTEMPTS_PER_MODEL; attempt++) {
       attempts++;
       try {
-        const response = await generate(model, userPrompt);
+        const response = await generate(model, userPrompt, systemInstruction);
         if (model !== GENERATION_MODEL || attempt > 1) {
           logger.warn('Generation recovered after retry/fallback', { model, attempt, attempts });
         }
@@ -385,8 +390,82 @@ async function answerQuestion(question, { channelId = null } = {}) {
   };
 }
 
+// A briefing is read on a screen, not in Slack, so it asks for Markdown and a
+// fixed section order the UI can rely on. Empty sections are dropped rather
+// than padded, which keeps a quiet channel honest instead of inventing status.
+const BRIEFING_SYSTEM_PROMPT = `You are a project analyst producing a status briefing for a product manager about to engage with ONE project channel.
+
+Read the channel's recent messages and produce a briefing with these sections, in this order, using Markdown:
+
+## TL;DR
+Two or three sentences: where this project stands right now.
+
+## Blockers
+What is stuck, and what it is waiting on. Most urgent first.
+
+## Open Questions
+Unanswered questions, and who they are directed at.
+
+## Decisions
+What was decided, and when.
+
+## Who Owes What
+Outstanding commitments as "Person → what they owe". Use the <@USER_ID> form exactly as it appears in the messages.
+
+## Suggested Next Actions
+Concrete things the PM should do or chase.
+
+Rules:
+- Use ONLY the provided messages. Never invent status.
+- OMIT any section you have no real evidence for. Do not write "None identified" — just leave the section out entirely.
+- If the channel is mostly chatter with no substance, say so plainly in the TL;DR and omit everything else.
+- Keep <@USER_ID> mentions verbatim so names render.
+- Never print raw channel IDs or Unix timestamps. Refer to time in relative terms ("yesterday", "Friday").
+- Be terse. A PM is reading this to get oriented in 30 seconds.`;
+
+/**
+ * Generate a status briefing for one channel from its most recent activity.
+ * Recency-ordered rather than similarity-ranked: a briefing is about what has
+ * been happening, which similarity search has no way to express.
+ *
+ * @param {string} channelId
+ * @param {Object} [options]
+ * @param {number} [options.limit=30] - How many recent messages to read
+ * @returns {Promise<{briefing: string|null, empty: boolean, messageCount: number, model: ?string, oldest: ?number, newest: ?number}>}
+ */
+async function briefChannel(channelId, { limit = 30 } = {}) {
+  const rows = await getRecentInChannel(channelId, limit);
+
+  if (rows.length === 0) {
+    logger.info('Briefing requested for empty channel', { channelId });
+    return { briefing: null, empty: true, messageCount: 0, model: null, oldest: null, newest: null };
+  }
+
+  // Oldest-first reads as a narrative; the retrieval returns newest-first.
+  const ordered = [...rows].reverse();
+  const userPrompt = `Recent messages from this channel, oldest first:\n\n${buildContextString(ordered)}\n\n---\nProduce the status briefing.`;
+
+  const { response, model } = await generateWithFallback({
+    userPrompt,
+    systemInstruction: BRIEFING_SYSTEM_PROMPT,
+  });
+
+  const epochs = rows.map(rowEpoch).filter((e) => Number.isFinite(e));
+  logger.info('Briefing generated', { channelId, messageCount: rows.length, model });
+
+  return {
+    briefing: response.text || null,
+    empty: false,
+    messageCount: rows.length,
+    model,
+    oldest: epochs.length ? Math.min(...epochs) : null,
+    newest: epochs.length ? Math.max(...epochs) : null,
+  };
+}
+
 module.exports = {
   answerQuestion,
+  briefChannel,
   detectRecencyIntent,
   detectCrossChannelIntent,
   detectMetaIntent,

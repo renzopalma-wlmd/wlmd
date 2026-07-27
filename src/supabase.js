@@ -66,6 +66,35 @@ async function searchContext(queryEmbedding, threshold = 0.5, count = 5) {
   return data;
 }
 
+/**
+ * Per-channel indexing stats, for the dashboard channel list.
+ * @returns {Promise<Map<string, {rows: number, lastActivity: string|null}>>}
+ */
+async function getChannelStats() {
+  const { data, error } = await supabase
+    .from('knowledge_context')
+    .select('external_id, created_at, metadata')
+    .eq('source', 'slack');
+
+  if (error) {
+    logger.error('Failed to load channel stats', { error: error.message });
+    throw error;
+  }
+
+  const stats = new Map();
+  for (const row of data) {
+    const channel = row.metadata?.channel || row.external_id;
+    if (!channel) continue;
+    const entry = stats.get(channel) || { rows: 0, lastActivity: null };
+    entry.rows++;
+    if (!entry.lastActivity || row.created_at > entry.lastActivity) {
+      entry.lastActivity = row.created_at;
+    }
+    stats.set(channel, entry);
+  }
+  return stats;
+}
+
 /** Cosine similarity between two equal-length vectors. */
 function cosineSimilarity(a, b) {
   let dot = 0;
@@ -246,6 +275,7 @@ module.exports = {
   insertContext,
   searchContext,
   searchContextScoped,
+  getChannelStats,
   getRecentInChannel,
   getRecentAcrossSources,
   getRecentContext,
