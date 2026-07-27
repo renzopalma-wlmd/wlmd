@@ -1,5 +1,44 @@
 const { answerQuestion } = require('../rag');
+const { toMrkdwn, channelRef, dateRef, truncateForSlack } = require('../utils/slack-format');
 const logger = require('../utils/logger');
+
+/**
+ * Build the source attribution footer.
+ * Reports where the context came from and when, rather than similarity scores
+ * — those were developer diagnostics that meant nothing to the reader.
+ * @param {Array<{source: string, channelId: ?string, taskId: ?string, epoch: ?number}>} sources
+ * @returns {string} Footer text, or '' when there are no sources
+ */
+function buildSourceFooter(sources) {
+  if (!sources || sources.length === 0) return '';
+
+  const slack = sources.filter((s) => s.source === 'slack');
+  const clickup = sources.filter((s) => s.source === 'clickup');
+
+  const counts = [];
+  if (slack.length) counts.push(`💬 ${slack.length} Slack message${slack.length === 1 ? '' : 's'}`);
+  if (clickup.length) counts.push(`📋 ${clickup.length} ClickUp update${clickup.length === 1 ? '' : 's'}`);
+
+  const parts = [counts.join(' · ')];
+
+  // Distinct channels, capped so a wide sweep doesn't produce a wall of links.
+  const channels = [...new Set(slack.map((s) => s.channelId).filter(Boolean))];
+  const refs = channels.slice(0, 4).map(channelRef).filter(Boolean);
+  if (refs.length) {
+    const overflow = channels.length - refs.length;
+    parts.push(`from ${refs.join(', ')}${overflow > 0 ? ` +${overflow} more` : ''}`);
+  }
+
+  // Time span of the evidence, rendered in each reader's own timezone.
+  const epochs = sources.map((s) => s.epoch).filter((e) => Number.isFinite(e));
+  if (epochs.length) {
+    const oldest = dateRef(Math.min(...epochs), '{date_short_pretty}');
+    const newest = dateRef(Math.max(...epochs), '{date_short_pretty}');
+    if (oldest && newest) parts.push(oldest === newest ? oldest : `${oldest} – ${newest}`);
+  }
+
+  return `\n\n_${parts.filter(Boolean).join(' · ')}_`;
+}
 
 /**
  * Register the @mention listener.
@@ -32,28 +71,22 @@ function registerMentionListener(app) {
       // Run RAG pipeline
       const { answer, sources } = await answerQuestion(question);
 
-      // Build source citation footer
-      let sourceFooter = '';
-      if (sources.length > 0) {
-        const sourceIcons = sources.map((s) => 
-          s.source === 'slack' ? '💬' : '📋'
-        );
-        const uniqueIcons = [...new Set(sourceIcons)];
-        sourceFooter = `\n\n_Sources: ${uniqueIcons.join(' ')} ${sources.length} context chunks used (similarity range: ${sources[sources.length - 1].similarity.toFixed(2)}–${sources[0].similarity.toFixed(2)})_`;
-      }
+      // Gemini emits Markdown regardless of prompting, so normalize to mrkdwn
+      // before it reaches Slack — otherwise **bold** shows its asterisks.
+      const reply = `${truncateForSlack(toMrkdwn(answer))}${buildSourceFooter(sources)}`;
 
       // Update the thinking message with the actual answer
       try {
         await client.chat.update({
           channel: event.channel,
           ts: thinkingMsg.ts,
-          text: `${answer}${sourceFooter}`,
+          text: reply,
         });
       } catch (updateError) {
         // If update fails, post as a new message
         logger.warn('Failed to update thinking message, posting new reply', { error: updateError.message });
         await say({
-          text: `${answer}${sourceFooter}`,
+          text: reply,
           thread_ts: event.ts,
         });
       }
@@ -75,4 +108,4 @@ function registerMentionListener(app) {
   logger.info('Mention listener registered');
 }
 
-module.exports = { registerMentionListener };
+module.exports = { registerMentionListener, buildSourceFooter };
