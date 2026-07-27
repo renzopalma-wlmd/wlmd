@@ -11,6 +11,10 @@ ClickUp Events ──→ Express Webhook ──→ Gemini Embed ──→ Supaba
 @mention Question ──→ Embed Query ──→ Vector Search ──→ RAG Pipeline ──→ Gemini Answer ──→ Slack Reply
 ```
 
+> **Architecture deep-dive:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how the read
+> and reply paths actually work, diagrams, the data model, known limitations, and a map of
+> the docs still to be written.
+
 ## Tech Stack
 
 - **Slack Integration**: [Slack Bolt for JavaScript](https://slack.dev/bolt-js) (Socket Mode + HTTP)
@@ -107,6 +111,8 @@ pm-insight-hub/
 ├── app.js                     # Main entry point
 ├── package.json
 ├── .env.example
+├── docs/
+│   └── ARCHITECTURE.md        # Read/reply paths, diagrams, limitations, doc map
 ├── sql/
 │   └── schema.sql             # Supabase schema + vector search
 └── src/
@@ -119,7 +125,8 @@ pm-insight-hub/
     │   ├── mentions.js        # @mention RAG handler
     │   └── clickup.js         # ClickUp webhook receiver
     └── utils/
-        └── logger.js          # Structured logging
+        ├── logger.js          # Structured logging
+        └── slack-format.js    # Markdown → Slack mrkdwn, channel/date tokens
 ```
 
 ## License
