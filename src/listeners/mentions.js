@@ -98,8 +98,17 @@ function registerMentionListener(app) {
         channel: event.channel,
       });
 
+      // Distinguish "the AI provider is busy" from a real fault — the first is
+      // worth retrying, the second isn't, and a generic message hides which.
+      const status = typeof error?.status === 'number'
+        ? error.status
+        : Number.parseInt((String(error?.message || '').match(/"code"\s*:\s*(\d{3})/) || [])[1], 10);
+      const overloaded = status === 503 || status === 429;
+
       await say({
-        text: '❌ Sorry, I encountered an error while processing your question. Please try again.',
+        text: overloaded
+          ? '⏳ The AI model is overloaded right now and did not recover after several retries. Please ask again in a moment.'
+          : '❌ Sorry, I hit an error while processing your question. Please try again.',
         thread_ts: event.ts,
       });
     }
