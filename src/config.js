@@ -35,6 +35,13 @@ module.exports = {
   clickup: {
     webhookSecret: process.env.CLICKUP_WEBHOOK_SECRET || '',
     apiToken: process.env.CLICKUP_API_TOKEN || '',
+    // Spaces to sync. Deliberately an allowlist rather than "everything":
+    // the Whitelabel Clients space holds ~170 template-seeded client folders
+    // whose near-identical onboarding tasks would swamp the vector index.
+    spaceIds: (process.env.CLICKUP_SPACE_IDS || '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean),
   },
   dashboard: {
     // Shared secret for the web dashboard. It serves private client-channel

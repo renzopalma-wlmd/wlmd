@@ -5,7 +5,8 @@
   "main": "app.js",
   "scripts": {
     "start": "node app.js",
-    "dev": "npx nodemon app.js"
+    "dev": "npx nodemon app.js",
+    "sync:clickup": "node scripts/sync-clickup.js"
   },
   "dependencies": {
     "@slack/bolt": "^4.1.0",
