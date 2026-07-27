@@ -65,6 +65,11 @@
   .chan[aria-current="true"] { background: var(--accent); color: #fff; }
   .chan .row1 { display: flex; align-items: center; gap: 6px; font-weight: 500; }
   .chan .meta { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+  .group {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
+    margin: 12px 11px 5px; font-weight: 600;
+  }
+  .chan-list .group:first-child { margin-top: 4px; }
   .chan[aria-current="true"] .meta { color: rgba(255,255,255,.8); }
   .lock { font-size: 10px; opacity: .8; }
 
@@ -130,7 +135,7 @@
   <aside>
     <div class="brand">
       <h1>PM Insight Hub</h1>
-      <span>Channel intelligence</span>
+      <span>Channels &amp; boards</span>
     </div>
     <div class="search">
       <input id="filter" class="field" type="search" placeholder="Find a channel…" autocomplete="off">
@@ -141,7 +146,7 @@
   <main>
     <div id="placeholder">
       <div class="head"><h2>Pick a project</h2></div>
-      <p class="sub">Select a channel to generate a live status briefing from its recent activity, then ask follow-up questions scoped to it.</p>
+      <p class="sub">Select a Slack channel or a ClickUp board to generate a live status briefing, then ask follow-up questions scoped to it.</p>
     </div>
 
     <div id="detail" hidden>
@@ -176,6 +181,7 @@
 const $ = (id) => document.getElementById(id);
 let token = sessionStorage.getItem('pmih_token') || '';
 let channels = [];
+let boards = [];
 let current = null;
 
 async function api(pathname, options = {}) {
@@ -256,18 +262,36 @@ function relative(iso) {
 function renderChannels() {
   const term = $('filter').value.trim().toLowerCase();
   const list = $('chan-list');
-  const shown = channels.filter((c) => !term || c.name.toLowerCase().includes(term));
+  const match = (name) => !term || name.toLowerCase().includes(term);
 
-  if (!shown.length) {
-    list.innerHTML = '<p class="empty" style="padding:10px 11px">No channels match.</p>';
+  const shownChannels = channels.filter((c) => match(c.name));
+  const shownBoards = boards.filter((b) => match(b.name) || match(b.folderName || ''));
+
+  if (!shownChannels.length && !shownBoards.length) {
+    list.innerHTML = '<p class="empty" style="padding:10px 11px">Nothing matches.</p>';
     return;
   }
 
-  list.innerHTML = shown.map((c) => `
+  const chanRow = (c) => `
     <button class="chan" data-id="${esc(c.id)}" aria-current="${current === c.id}">
       <span class="row1">${c.isPrivate ? '<span class="lock">🔒</span>' : '#'}${esc(c.name)}</span>
       <span class="meta">${c.indexedMessages} indexed · ${esc(relative(c.lastActivity))}</span>
-    </button>`).join('');
+    </button>`;
+
+  const boardRow = (b) => `
+    <button class="chan" data-id="${esc(b.id)}" aria-current="${current === b.id}">
+      <span class="row1">📋 ${esc(b.name)}</span>
+      <span class="meta">${b.indexedTasks} tasks${b.folderName ? ' · ' + esc(b.folderName) : ''}</span>
+    </button>`;
+
+  let html = '';
+  if (shownChannels.length) {
+    html += '<p class="group">Slack channels</p>' + shownChannels.map(chanRow).join('');
+  }
+  if (shownBoards.length) {
+    html += '<p class="group">ClickUp boards</p>' + shownBoards.map(boardRow).join('');
+  }
+  list.innerHTML = html;
 
   for (const el of list.querySelectorAll('.chan')) {
     el.onclick = () => select(el.dataset.id);
@@ -278,25 +302,37 @@ function renderChannels() {
 async function select(id, forceRefresh = false) {
   current = id;
   const channel = channels.find((c) => c.id === id);
+  const board = boards.find((b) => b.id === id);
+  if (!channel && !board) return;
   renderChannels();
 
   $('placeholder').hidden = true;
   $('detail').hidden = false;
-  $('ch-name').textContent = (channel.isPrivate ? '🔒 ' : '#') + channel.name;
-  $('ch-pill').textContent = channel.indexedMessages + ' messages indexed';
-  $('ch-sub').textContent = 'Last activity ' + relative(channel.lastActivity);
+  if (board) {
+    $('ch-name').textContent = '📋 ' + board.name;
+    $('ch-pill').textContent = board.indexedTasks + ' tasks indexed';
+    $('ch-sub').textContent = board.folderName ? 'ClickUp · ' + board.folderName : 'ClickUp board';
+    $('q').placeholder = 'e.g. what is urgent and unassigned?';
+  } else {
+    $('ch-name').textContent = (channel.isPrivate ? '🔒 ' : '#') + channel.name;
+    $('ch-pill').textContent = channel.indexedMessages + ' messages indexed';
+    $('ch-sub').textContent = 'Last activity ' + relative(channel.lastActivity);
+    $('q').placeholder = 'e.g. what is blocking the launch?';
+  }
   $('answer').innerHTML = '';
   $('brief').innerHTML = '<span class="spinner"></span>Reading the channel and writing a briefing…';
 
   try {
     const data = await api('/api/channels/' + id + '/briefing' + (forceRefresh ? '?refresh=1' : ''));
     if (data.empty) {
-      $('brief').innerHTML = '<p class="empty">Nothing indexed for this channel yet. The bot only sees messages posted while it is running — activity here will appear as people talk.</p>';
+      $('brief').innerHTML = board
+        ? '<p class="empty">No tasks indexed for this board yet. Run <code>npm run sync:clickup</code> to pull it in.</p>'
+        : '<p class="empty">Nothing indexed for this channel yet. The bot only sees messages posted while it is running — activity here will appear as people talk.</p>';
       return;
     }
     $('brief').innerHTML = renderMarkdown(data.briefing)
       + '<p class="empty" style="margin-top:16px;font-size:12px">Based on ' + data.messageCount
-      + ' recent messages' + (data.cached ? ' · cached' : '') + '</p>';
+      + (board ? ' tasks' : ' recent messages') + (data.cached ? ' · cached' : '') + '</p>';
   } catch (err) {
     $('brief').innerHTML = '<p class="empty">' + esc(err.message) + '</p>';
   }
@@ -321,7 +357,8 @@ async function ask() {
       body: JSON.stringify({ question }),
     });
     block.querySelector('.a').innerHTML = renderMarkdown(data.answer)
-      + '<p class="empty" style="font-size:12px">' + data.sourceCount + ' messages from this channel</p>';
+      + '<p class="empty" style="font-size:12px">' + data.sourceCount + ' items from this '
+      + (boards.some((b) => b.id === current) ? 'board' : 'channel') + '</p>';
   } catch (err) {
     block.querySelector('.a').innerHTML = '<span class="empty">' + esc(err.message) + '</span>';
   } finally {
@@ -335,7 +372,8 @@ async function start() {
   $('shell').hidden = false;
   try {
     const data = await api('/api/channels');
-    channels = data.channels;
+    channels = data.channels || [];
+    boards = data.boards || [];
     renderChannels();
   } catch (err) {
     $('chan-list').innerHTML = '<p class="empty" style="padding:10px 11px">' + esc(err.message) + '</p>';

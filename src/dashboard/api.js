@@ -4,7 +4,7 @@ const express = require('express');
 const { WebClient } = require('@slack/web-api');
 const config = require('../config');
 const { answerQuestion, briefChannel } = require('../rag');
-const { getChannelStats } = require('../supabase');
+const { getChannelStats, getBoardStats } = require('../supabase');
 const logger = require('../utils/logger');
 
 const slack = new WebClient(config.slack.botToken);
@@ -158,9 +158,17 @@ async function listChannels() {
   return channels;
 }
 
-/** Reject IDs that aren't Slack channel IDs before they reach the database. */
-function isChannelId(value) {
-  return typeof value === 'string' && /^[CG][A-Z0-9]{6,}$/.test(value);
+/**
+ * Reject anything that isn't a scope we recognise, before it reaches the
+ * database. A scope is either a Slack channel or a ClickUp list.
+ */
+function isScopeId(value) {
+  return typeof value === 'string' && (/^[CG][A-Z0-9]{6,}$/.test(value) || /^\d{6,}$/.test(value));
+}
+
+/** ClickUp list ids are numeric; Slack channel ids are not. */
+function scopeKind(value) {
+  return /^\d{6,}$/.test(value) ? 'board' : 'channel';
 }
 
 /**
@@ -178,7 +186,16 @@ function createDashboardRouter() {
 
   router.get('/api/channels', async (req, res) => {
     try {
-      res.json({ channels: await listChannels() });
+      // Boards come from what has been synced, so a failure there must not
+      // take the Slack channel list down with it.
+      const [channels, boards] = await Promise.all([
+        listChannels(),
+        getBoardStats().catch((error) => {
+          logger.warn('Could not load ClickUp boards', { error: error.message });
+          return [];
+        }),
+      ]);
+      res.json({ channels, boards });
     } catch (error) {
       logger.error('Failed to list channels', { error: error.message });
       res.status(502).json({ error: 'Could not load channels from Slack.' });
@@ -187,7 +204,7 @@ function createDashboardRouter() {
 
   router.get('/api/channels/:id/briefing', async (req, res) => {
     const { id } = req.params;
-    if (!isChannelId(id)) return res.status(400).json({ error: 'Invalid channel id.' });
+    if (!isScopeId(id)) return res.status(400).json({ error: 'Invalid channel or board id.' });
 
     const fresh = req.query.refresh === '1';
     const cached = briefingCache.get(id);
@@ -196,7 +213,7 @@ function createDashboardRouter() {
     }
 
     try {
-      const result = await briefChannel(id);
+      const result = await briefChannel(id, { kind: scopeKind(id) });
       const payload = {
         ...result,
         briefing: await resolveSlackTokens(result.briefing),
@@ -212,7 +229,7 @@ function createDashboardRouter() {
 
   router.post('/api/channels/:id/ask', async (req, res) => {
     const { id } = req.params;
-    if (!isChannelId(id)) return res.status(400).json({ error: 'Invalid channel id.' });
+    if (!isScopeId(id)) return res.status(400).json({ error: 'Invalid channel or board id.' });
 
     const question = String(req.body?.question || '').trim();
     if (question.length < 3) return res.status(400).json({ error: 'Ask a longer question.' });

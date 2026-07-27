@@ -95,6 +95,42 @@ async function getChannelStats() {
   return stats;
 }
 
+/**
+ * Indexed ClickUp boards (lists), for the dashboard sidebar. Derived from what
+ * has actually been synced rather than from ClickUp, so the UI never offers a
+ * board with nothing behind it.
+ * @returns {Promise<Array<{id: string, name: string, folderName: ?string, indexedTasks: number, lastActivity: ?string}>>}
+ */
+async function getBoardStats() {
+  const { data, error } = await supabase
+    .from('knowledge_context')
+    .select('external_id, created_at, metadata')
+    .eq('source', 'clickup');
+
+  if (error) {
+    logger.error('Failed to load board stats', { error: error.message });
+    throw error;
+  }
+
+  const boards = new Map();
+  for (const row of data) {
+    const id = row.metadata?.list_id || row.external_id;
+    if (!id) continue;
+    const entry = boards.get(id) || {
+      id,
+      name: row.metadata?.list_name || id,
+      folderName: row.metadata?.folder_name || null,
+      indexedTasks: 0,
+      lastActivity: null,
+    };
+    entry.indexedTasks++;
+    if (!entry.lastActivity || row.created_at > entry.lastActivity) entry.lastActivity = row.created_at;
+    boards.set(id, entry);
+  }
+
+  return [...boards.values()].sort((a, b) => b.indexedTasks - a.indexedTasks);
+}
+
 /** Cosine similarity between two equal-length vectors. */
 function cosineSimilarity(a, b) {
   let dot = 0;
@@ -276,6 +312,7 @@ module.exports = {
   searchContext,
   searchContextScoped,
   getChannelStats,
+  getBoardStats,
   getRecentInChannel,
   getRecentAcrossSources,
   getRecentContext,

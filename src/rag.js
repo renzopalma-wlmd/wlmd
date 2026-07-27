@@ -433,17 +433,22 @@ Rules:
  * @param {number} [options.limit=30] - How many recent messages to read
  * @returns {Promise<{briefing: string|null, empty: boolean, messageCount: number, model: ?string, oldest: ?number, newest: ?number}>}
  */
-async function briefChannel(channelId, { limit = 30 } = {}) {
+async function briefChannel(channelId, { limit = 30, kind = 'channel' } = {}) {
   const rows = await getRecentInChannel(channelId, limit);
 
   if (rows.length === 0) {
-    logger.info('Briefing requested for empty channel', { channelId });
+    logger.info('Briefing requested for empty scope', { channelId, kind });
     return { briefing: null, empty: true, messageCount: 0, model: null, oldest: null, newest: null };
   }
 
-  // Oldest-first reads as a narrative; the retrieval returns newest-first.
-  const ordered = [...rows].reverse();
-  const userPrompt = `Recent messages from this channel, oldest first:\n\n${buildContextString(ordered)}\n\n---\nProduce the status briefing.`;
+  // A board is a set of work items; a channel is a conversation. Reversing a
+  // board into "oldest first" implies a narrative that isn't there.
+  const isBoard = kind === 'board';
+  const ordered = isBoard ? rows : [...rows].reverse();
+  const preamble = isBoard
+    ? 'Tasks on this ClickUp board, most recently updated first. Each entry shows its status, priority, assignee and tags:'
+    : 'Recent messages from this channel, oldest first:';
+  const userPrompt = `${preamble}\n\n${buildContextString(ordered)}\n\n---\nProduce the status briefing.`;
 
   const { response, model } = await generateWithFallback({
     userPrompt,
