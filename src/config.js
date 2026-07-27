@@ -36,6 +36,12 @@ module.exports = {
     webhookSecret: process.env.CLICKUP_WEBHOOK_SECRET || '',
     apiToken: process.env.CLICKUP_API_TOKEN || '',
   },
+  dashboard: {
+    // Shared secret for the web dashboard. It serves private client-channel
+    // content over the internet, so the API refuses to run without it rather
+    // than defaulting to open.
+    token: process.env.DASHBOARD_TOKEN || '',
+  },
   access: {
     // Slack user IDs allowed to ask about how the bot itself works — its logic,
     // models, prompts, storage. Everyone else gets a decline. Unset means

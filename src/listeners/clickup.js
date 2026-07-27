@@ -96,10 +96,14 @@ function extractTaskContent(payload) {
 function createClickUpRouter() {
   const router = express.Router();
 
-  // Use raw body parser for signature verification
-  router.use(express.raw({ type: 'application/json' }));
-
-  router.post('/clickup/webhook', async (req, res) => {
+  // Raw body parser, scoped to THIS ROUTE ONLY.
+  //
+  // It must not be a router-level `use`: this router is mounted at the app root,
+  // so a root-level raw parser consumes the body of every JSON request passing
+  // through it — including the dashboard's /api routes, which then see a Buffer
+  // instead of a parsed object. Keep it attached to the one route that needs the
+  // exact bytes for HMAC verification.
+  router.post('/clickup/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
     try {
       // Verify signature
       const signature = req.headers['x-signature'];

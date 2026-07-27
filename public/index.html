@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>PM Insight Hub</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #161923; --panel-2: #1c2030; --line: #262b3a;
+    --text: #e6e8ef; --muted: #8b93a7; --accent: #5b8cff;
+    --danger: #ff6b6b; --radius: 10px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f7f9; --panel: #ffffff; --panel-2: #f1f3f7; --line: #e2e5ec;
+      --text: #1a1d26; --muted: #666e82;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  button { font: inherit; cursor: pointer; }
+  input, textarea { font: inherit; }
+
+  /* ---------- gate ---------- */
+  #gate {
+    position: fixed; inset: 0; display: grid; place-items: center;
+    background: var(--bg); z-index: 10; padding: 24px;
+  }
+  #gate .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 28px; width: 100%; max-width: 380px;
+  }
+  #gate h1 { margin: 0 0 6px; font-size: 19px; }
+  #gate p { margin: 0 0 18px; color: var(--muted); font-size: 13px; }
+  .field {
+    width: 100%; padding: 11px 13px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--panel-2); color: var(--text);
+  }
+  .field:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .btn {
+    background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+    padding: 11px 16px; font-weight: 600;
+  }
+  .btn:disabled { opacity: .55; cursor: not-allowed; }
+  .btn.ghost { background: transparent; border: 1px solid var(--line); color: var(--text); font-weight: 500; }
+  .err { color: var(--danger); font-size: 13px; margin-top: 10px; min-height: 18px; }
+
+  /* ---------- shell ---------- */
+  .shell { display: grid; grid-template-columns: 290px 1fr; min-height: 100vh; }
+  aside { background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; }
+  .brand { padding: 18px 18px 12px; border-bottom: 1px solid var(--line); }
+  .brand h1 { margin: 0; font-size: 15px; letter-spacing: .2px; }
+  .brand span { color: var(--muted); font-size: 12px; }
+  .search { padding: 12px; border-bottom: 1px solid var(--line); }
+  .chan-list { overflow-y: auto; flex: 1; padding: 8px; }
+  .chan {
+    width: 100%; text-align: left; background: transparent; border: 0; color: var(--text);
+    padding: 9px 11px; border-radius: 8px; display: block; margin-bottom: 2px;
+  }
+  .chan:hover { background: var(--panel-2); }
+  .chan[aria-current="true"] { background: var(--accent); color: #fff; }
+  .chan .row1 { display: flex; align-items: center; gap: 6px; font-weight: 500; }
+  .chan .meta { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+  .chan[aria-current="true"] .meta { color: rgba(255,255,255,.8); }
+  .lock { font-size: 10px; opacity: .8; }
+
+  main { padding: 26px 30px 60px; max-width: 900px; }
+  .head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+  .head h2 { margin: 0; font-size: 22px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 22px; }
+  .toolbar { display: flex; gap: 8px; margin-bottom: 22px; flex-wrap: wrap; }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 20px 22px; margin-bottom: 18px;
+  }
+  .card h3 { margin: 0 0 12px; font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
+
+  .brief h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); margin: 22px 0 8px; }
+  .brief h2:first-child { margin-top: 0; }
+  .brief ul { margin: 0 0 10px; padding-left: 20px; }
+  .brief li { margin-bottom: 5px; }
+  .brief p { margin: 0 0 10px; }
+  .brief code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  .mention { color: var(--accent); font-weight: 500; }
+
+  .ask-row { display: flex; gap: 8px; }
+  .ask-row .field { flex: 1; }
+  .answer { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+  .answer:empty { display: none; }
+  .qa { margin-bottom: 18px; }
+  .qa .q { font-weight: 600; margin-bottom: 6px; }
+  .qa .a { color: var(--text); }
+
+  .empty { color: var(--muted); }
+  .spinner {
+    display: inline-block; width: 13px; height: 13px; border: 2px solid var(--line);
+    border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite;
+    vertical-align: -2px; margin-right: 7px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .pill {
+    display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px;
+    background: var(--panel-2); color: var(--muted); border: 1px solid var(--line);
+  }
+  @media (max-width: 760px) {
+    .shell { grid-template-columns: 1fr; }
+    aside { border-right: 0; border-bottom: 1px solid var(--line); max-height: 42vh; }
+    main { padding: 20px 16px 50px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="gate">
+  <div class="card">
+    <h1>PM Insight Hub</h1>
+    <p>Internal tool. Enter the dashboard token to continue.</p>
+    <input id="token" class="field" type="password" placeholder="Dashboard token" autocomplete="current-password">
+    <div class="err" id="gate-err"></div>
+    <button class="btn" id="gate-go" style="width:100%;margin-top:6px">Unlock</button>
+  </div>
+</div>
+
+<div class="shell" id="shell" hidden>
+  <aside>
+    <div class="brand">
+      <h1>PM Insight Hub</h1>
+      <span>Channel intelligence</span>
+    </div>
+    <div class="search">
+      <input id="filter" class="field" type="search" placeholder="Find a channel…" autocomplete="off">
+    </div>
+    <div class="chan-list" id="chan-list"></div>
+  </aside>
+
+  <main>
+    <div id="placeholder">
+      <div class="head"><h2>Pick a project</h2></div>
+      <p class="sub">Select a channel to generate a live status briefing from its recent activity, then ask follow-up questions scoped to it.</p>
+    </div>
+
+    <div id="detail" hidden>
+      <div class="head">
+        <h2 id="ch-name"></h2>
+        <span class="pill" id="ch-pill"></span>
+      </div>
+      <div class="sub" id="ch-sub"></div>
+
+      <div class="toolbar">
+        <button class="btn ghost" id="refresh">Regenerate briefing</button>
+      </div>
+
+      <div class="card">
+        <h3>Status briefing</h3>
+        <div class="brief" id="brief"></div>
+      </div>
+
+      <div class="card">
+        <h3>Ask about this channel</h3>
+        <div class="ask-row">
+          <input id="q" class="field" placeholder="e.g. what is blocking the launch?" autocomplete="off">
+          <button class="btn" id="ask">Ask</button>
+        </div>
+        <div class="answer" id="answer"></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let token = sessionStorage.getItem('pmih_token') || '';
+let channels = [];
+let current = null;
+
+async function api(pathname, options = {}) {
+  const res = await fetch(pathname, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token, ...(options.headers || {}) },
+  });
+  if (res.status === 401) { logout(); throw new Error('Unauthorized'); }
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || ('Request failed (' + res.status + ')'));
+  return body;
+}
+
+function logout() {
+  sessionStorage.removeItem('pmih_token');
+  token = '';
+  $('shell').hidden = true;
+  $('gate').style.display = 'grid';
+}
+
+/* ---------- escaping + tiny markdown renderer ---------- */
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// Slack leaves <@U…> / <#C…> tokens in message text; show them as readable chips.
+function slackTokens(s) {
+  return s
+    .replace(/&lt;@([A-Z0-9]+)&gt;/g, '<span class="mention">@$1</span>')
+    .replace(/&lt;#([A-Z0-9]+)\|?([^&]*)&gt;/g, (_m, id, name) => '<span class="mention">#' + (name || id) + '</span>')
+    .replace(/&lt;!date\^(\d+)\^[^|]*\|([^&]*)&gt;/g, '$2');
+}
+
+function inline(s) {
+  return slackTokens(esc(s))
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|\s)\*([^*\n]+)\*/g, '$1<strong>$2</strong>')
+    .replace(/(^|\s)_([^_\n]+)_/g, '$1<em>$2</em>');
+}
+
+function renderMarkdown(md) {
+  const out = [];
+  let list = null;
+  const closeList = () => { if (list) { out.push('</ul>'); list = null; } };
+
+  for (const raw of String(md).split('\n')) {
+    const line = raw.trimEnd();
+    if (!line.trim()) { closeList(); continue; }
+
+    const heading = line.match(/^#{1,6}\s+(.*)$/);
+    if (heading) { closeList(); out.push('<h2>' + inline(heading[1]) + '</h2>'); continue; }
+
+    const bullet = line.match(/^\s*(?:[-*+•]|\d+\.)\s+(.*)$/);
+    if (bullet) {
+      if (!list) { out.push('<ul>'); list = true; }
+      out.push('<li>' + inline(bullet[1]) + '</li>');
+      continue;
+    }
+    closeList();
+    out.push('<p>' + inline(line) + '</p>');
+  }
+  closeList();
+  return out.join('');
+}
+
+function relative(iso) {
+  if (!iso) return 'no activity yet';
+  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return mins + 'm ago';
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return hrs + 'h ago';
+  return Math.round(hrs / 24) + 'd ago';
+}
+
+/* ---------- channel list ---------- */
+function renderChannels() {
+  const term = $('filter').value.trim().toLowerCase();
+  const list = $('chan-list');
+  const shown = channels.filter((c) => !term || c.name.toLowerCase().includes(term));
+
+  if (!shown.length) {
+    list.innerHTML = '<p class="empty" style="padding:10px 11px">No channels match.</p>';
+    return;
+  }
+
+  list.innerHTML = shown.map((c) => `
+    <button class="chan" data-id="${esc(c.id)}" aria-current="${current === c.id}">
+      <span class="row1">${c.isPrivate ? '<span class="lock">🔒</span>' : '#'}${esc(c.name)}</span>
+      <span class="meta">${c.indexedMessages} indexed · ${esc(relative(c.lastActivity))}</span>
+    </button>`).join('');
+
+  for (const el of list.querySelectorAll('.chan')) {
+    el.onclick = () => select(el.dataset.id);
+  }
+}
+
+/* ---------- detail ---------- */
+async function select(id, forceRefresh = false) {
+  current = id;
+  const channel = channels.find((c) => c.id === id);
+  renderChannels();
+
+  $('placeholder').hidden = true;
+  $('detail').hidden = false;
+  $('ch-name').textContent = (channel.isPrivate ? '🔒 ' : '#') + channel.name;
+  $('ch-pill').textContent = channel.indexedMessages + ' messages indexed';
+  $('ch-sub').textContent = 'Last activity ' + relative(channel.lastActivity);
+  $('answer').innerHTML = '';
+  $('brief').innerHTML = '<span class="spinner"></span>Reading the channel and writing a briefing…';
+
+  try {
+    const data = await api('/api/channels/' + id + '/briefing' + (forceRefresh ? '?refresh=1' : ''));
+    if (data.empty) {
+      $('brief').innerHTML = '<p class="empty">Nothing indexed for this channel yet. The bot only sees messages posted while it is running — activity here will appear as people talk.</p>';
+      return;
+    }
+    $('brief').innerHTML = renderMarkdown(data.briefing)
+      + '<p class="empty" style="margin-top:16px;font-size:12px">Based on ' + data.messageCount
+      + ' recent messages' + (data.cached ? ' · cached' : '') + '</p>';
+  } catch (err) {
+    $('brief').innerHTML = '<p class="empty">' + esc(err.message) + '</p>';
+  }
+}
+
+async function ask() {
+  const input = $('q');
+  const question = input.value.trim();
+  if (question.length < 3 || !current) return;
+
+  const box = $('answer');
+  const block = document.createElement('div');
+  block.className = 'qa';
+  block.innerHTML = '<div class="q">' + esc(question) + '</div><div class="a"><span class="spinner"></span>Thinking…</div>';
+  box.prepend(block);
+  input.value = '';
+  $('ask').disabled = true;
+
+  try {
+    const data = await api('/api/channels/' + current + '/ask', {
+      method: 'POST',
+      body: JSON.stringify({ question }),
+    });
+    block.querySelector('.a').innerHTML = renderMarkdown(data.answer)
+      + '<p class="empty" style="font-size:12px">' + data.sourceCount + ' messages from this channel</p>';
+  } catch (err) {
+    block.querySelector('.a').innerHTML = '<span class="empty">' + esc(err.message) + '</span>';
+  } finally {
+    $('ask').disabled = false;
+  }
+}
+
+/* ---------- boot ---------- */
+async function start() {
+  $('gate').style.display = 'none';
+  $('shell').hidden = false;
+  try {
+    const data = await api('/api/channels');
+    channels = data.channels;
+    renderChannels();
+  } catch (err) {
+    $('chan-list').innerHTML = '<p class="empty" style="padding:10px 11px">' + esc(err.message) + '</p>';
+  }
+}
+
+$('gate-go').onclick = async () => {
+  const value = $('token').value.trim();
+  if (!value) return;
+  $('gate-go').disabled = true;
+  $('gate-err').textContent = '';
+  token = value;
+  try {
+    await api('/api/session');
+    sessionStorage.setItem('pmih_token', token);
+    start();
+  } catch (err) {
+    token = '';
+    $('gate-err').textContent = err.message === 'Unauthorized' ? 'That token was rejected.' : err.message;
+  } finally {
+    $('gate-go').disabled = false;
+  }
+};
+$('token').onkeydown = (e) => { if (e.key === 'Enter') $('gate-go').click(); };
+$('filter').oninput = renderChannels;
+$('q').onkeydown = (e) => { if (e.key === 'Enter') ask(); };
+$('ask').onclick = ask;
+$('refresh').onclick = () => current && select(current, true);
+
+if (token) {
+  api('/api/session').then(start).catch(() => logout());
+}
+</script>
+</body>
+</html>

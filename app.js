@@ -4,6 +4,7 @@ const logger = require('./src/utils/logger');
 const { registerMessageListener } = require('./src/listeners/messages');
 const { registerMentionListener } = require('./src/listeners/mentions');
 const { createClickUpRouter } = require('./src/listeners/clickup');
+const { createDashboardRouter } = require('./src/dashboard/api');
 
 // ==========================================================
 // Initialize Slack Bolt App
@@ -14,6 +15,7 @@ const { createClickUpRouter } = require('./src/listeners/clickup');
 // ==========================================================
 let slackApp;
 let receiver;
+let dashboardServer;
 
 if (config.slack.socketMode) {
   slackApp = new App({
@@ -23,12 +25,23 @@ if (config.slack.socketMode) {
     appToken: config.slack.appToken,
   });
   logger.info('Slack app configured for Socket Mode (development)');
+
+  // Socket Mode has no HTTP server of its own, so the dashboard gets a small
+  // standalone one — otherwise it would only be reachable in production.
+  const express = require('express');
+  const dashboardApp = express();
+  dashboardApp.use(createDashboardRouter());
+  dashboardApp.get('/health', (req, res) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  });
+  dashboardServer = dashboardApp;
 } else {
   receiver = new ExpressReceiver({
     signingSecret: config.slack.signingSecret,
   });
 
   receiver.router.use(createClickUpRouter());
+  receiver.router.use(createDashboardRouter());
   receiver.router.get('/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
@@ -53,9 +66,18 @@ async function start() {
   try {
     await slackApp.start(config.slack.socketMode ? undefined : config.server.port);
     logger.info('⚡️ PM-Insight-Hub Slack bot is running!');
+
+    if (dashboardServer) {
+      await new Promise((resolve) => dashboardServer.listen(config.server.port, resolve));
+    }
     if (!config.slack.socketMode) {
       logger.info(`📋 ClickUp webhook available at /clickup/webhook on port ${config.server.port}`);
     }
+    logger.info(
+      config.dashboard.token
+        ? `📊 Dashboard available at /dashboard on port ${config.server.port}`
+        : '📊 Dashboard is disabled — set DASHBOARD_TOKEN to enable it'
+    );
     logger.info('🚀 All services started successfully');
   } catch (error) {
     logger.error('Failed to start application', { error: error.message });
