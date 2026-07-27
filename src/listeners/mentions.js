@@ -1,4 +1,5 @@
-const { answerQuestion } = require('../rag');
+const config = require('../config');
+const { answerQuestion, detectMetaIntent } = require('../rag');
 const { toMrkdwn, channelRef, dateRef, truncateForSlack } = require('../utils/slack-format');
 const logger = require('../utils/logger');
 
@@ -68,8 +69,24 @@ function registerMentionListener(app) {
         return;
       }
 
-      // Run RAG pipeline
-      const { answer, sources } = await answerQuestion(question);
+      // Questions about how the bot itself works are restricted. This is a
+      // project brain for a channel, not a place to discuss its own internals.
+      if (detectMetaIntent(question) && !config.access.adminUserIds.includes(event.user)) {
+        logger.warn('Blocked technical question from non-admin', {
+          user: event.user,
+          channel: event.channel,
+          question: question.substring(0, 100),
+        });
+        await client.chat.update({
+          channel: event.channel,
+          ts: thinkingMsg.ts,
+          text: "🔒 I don't discuss how I'm built or configured. Ask me about this channel's project instead — status, blockers, decisions, or what you missed.",
+        });
+        return;
+      }
+
+      // Run RAG pipeline, scoped to the channel this question came from.
+      const { answer, sources } = await answerQuestion(question, { channelId: event.channel });
 
       // Gemini emits Markdown regardless of prompting, so normalize to mrkdwn
       // before it reaches Slack — otherwise **bold** shows its asterisks.

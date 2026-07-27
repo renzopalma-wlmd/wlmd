@@ -68,3 +68,51 @@ BEGIN
   LIMIT match_count;
 END;
 $$;
+
+-- =============================================
+-- 7. Channel-scoped similarity search
+--
+-- The bot answers from the channel a question was asked in, so retrieval needs
+-- a source/channel filter pushed into the query. Filtering client-side does not
+-- work: the global top-N may contain nothing from the target channel.
+--
+-- Passing NULL for a filter disables it, so this also serves workspace-wide
+-- search and supersedes match_context. Unlike the original it also returns
+-- external_id and created_at, which the reply path needs for citations.
+-- =============================================
+CREATE OR REPLACE FUNCTION match_context_scoped (
+  query_embedding VECTOR(1536),
+  match_threshold FLOAT,
+  match_count INT,
+  filter_source TEXT DEFAULT NULL,
+  filter_external_id TEXT DEFAULT NULL
+)
+RETURNS TABLE (
+  id UUID,
+  source TEXT,
+  external_id TEXT,
+  content TEXT,
+  metadata JSONB,
+  created_at TIMESTAMPTZ,
+  similarity FLOAT
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT
+    kc.id,
+    kc.source,
+    kc.external_id,
+    kc.content,
+    kc.metadata,
+    kc.created_at,
+    1 - (kc.embedding <=> query_embedding) AS similarity
+  FROM knowledge_context kc
+  WHERE (filter_source IS NULL OR kc.source = filter_source)
+    AND (filter_external_id IS NULL OR kc.external_id = filter_external_id)
+    AND 1 - (kc.embedding <=> query_embedding) > match_threshold
+  ORDER BY kc.embedding <=> query_embedding
+  LIMIT match_count;
+END;
+$$;

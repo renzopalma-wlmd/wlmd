@@ -36,6 +36,15 @@ module.exports = {
     webhookSecret: process.env.CLICKUP_WEBHOOK_SECRET || '',
     apiToken: process.env.CLICKUP_API_TOKEN || '',
   },
+  access: {
+    // Slack user IDs allowed to ask about how the bot itself works — its logic,
+    // models, prompts, storage. Everyone else gets a decline. Unset means
+    // nobody is trusted, which fails closed on purpose.
+    adminUserIds: (process.env.ADMIN_SLACK_USER_IDS || '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean),
+  },
   server: {
     port: parseInt(process.env.PORT || '3000', 10),
   },
