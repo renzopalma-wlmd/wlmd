@@ -537,15 +537,23 @@ Output Markdown with these sections, omitting any you have no evidence for:
 ## Alignment
 Where conversation and tasks agree. One or two lines, no more.
 
+## Handled in chat
+Work that was raised AND resolved in the conversation itself, with no task ever created. This is normal for same-day escalations and is NOT a problem — list it briefly so the PM knows it happened and nothing is owed. If there is none, omit this section.
+
 ## Disconnects
 The valuable part. Each bullet is one concrete mismatch. Always name the board a task sits on — the list is its workstream and the status is its stage, so "blocked on the Design board" and "blocked on Active Tasks List" mean different things:
-- Discussed in chat, but no task exists
+- Raised in chat, still UNRESOLVED, and no task tracks it. This is untracked open work.
 - A task says one status while chat says something different (e.g. task "in progress", chat says blocked or already shipped)
 - A task nobody has mentioned in conversation at all
 - Work chat treats as urgent that sits unassigned or with no due date
 
+Critical judgement — do not report a missing task for work the chat already closed:
+- Urgent issues here are routinely raised and fixed the same day over Slack, so no task is ever opened. That is a legitimate workflow, not a gap.
+- Before calling a task "missing", read the conversation to its end. If someone says it was fixed, pushed, resolved, or done, it belongs under "Handled in chat" — never under Disconnects.
+- Only call it a disconnect when the thread ends with the work still open, waiting, or unanswered.
+
 ## Suggested Next Actions
-What the PM should do about the disconnects specifically.
+What the PM should do about the Disconnects specifically. Never suggest creating a task for something already handled in chat, and never suggest chasing work the conversation shows as finished.
 
 Rules:
 - Reference tasks by their [WLMD-…] id so they can be found.
@@ -618,7 +626,9 @@ async function analyzeCoherence(channelId) {
     'CONVERSATION in this channel, oldest first:',
     buildContextString([...conversation].reverse()),
     '',
-    'RELATED CLICKUP TASKS (matched by topic, each with status, priority, assignee):',
+    'RELATED CLICKUP TASKS (matched by topic, each with board, status, priority, assignee).',
+    'Completed tasks are included only so you can confirm whether something raised in chat was finished.',
+    'Do not build the briefing around them.',
     buildContextString(related),
     '',
     '---',

@@ -98,22 +98,74 @@
   .brief code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
   .mention { color: var(--accent); font-weight: 500; }
 
+  /* ---- related tasks: triage at a glance ---- */
   .board-head {
-    font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--accent);
-    margin: 16px 0 2px; font-weight: 600;
+    display: flex; align-items: center; gap: 8px;
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: .09em;
+    color: var(--muted); margin: 20px 0 8px; font-weight: 700;
   }
-  #tasks .board-head:first-child { margin-top: 0; }
-  .task { padding: 10px 0; border-bottom: 1px solid var(--line); }
-  .task:last-child { border-bottom: 0; }
-  .task-top { font-weight: 500; margin-bottom: 4px; }
-  .task-top a { color: var(--text); text-decoration: none; border-bottom: 1px solid var(--line); }
-  .task-top a:hover { color: var(--accent); }
-  .task-top code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 12px; color: var(--muted); }
-  .task-meta { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
-  .tag { padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel-2); }
-  .tag.ok { color: #3ecf8e; } .tag.warn { color: #f0b429; }
-  .tag.danger { color: var(--danger); } .tag.muted { color: var(--muted); }
-  .dim { opacity: .7; }
+  .board-head::before {
+    content: ''; width: 3px; height: 11px; border-radius: 2px; background: var(--muted); opacity: .55;
+  }
+  #tasks > .board-head:first-child { margin-top: 2px; }
+  .board-head .count {
+    font-size: 10px; padding: 0 6px; border-radius: 999px;
+    background: var(--panel-2); border: 1px solid var(--line); letter-spacing: 0;
+  }
+
+  .task {
+    position: relative; padding: 9px 0 9px 13px; margin-bottom: 1px;
+    border-left: 2px solid transparent;
+  }
+  .task.sev-blocked  { border-left-color: var(--danger); }
+  .task.sev-overdue  { border-left-color: var(--warnish); }
+  .task.sev-urgent   { border-left-color: var(--warnish); opacity: .95; }
+  .task.sev-open     { border-left-color: var(--line); }
+  .task.sev-done     { border-left-color: transparent; opacity: .55; }
+
+  .task-top { font-size: 14px; font-weight: 500; line-height: 1.4; margin-bottom: 5px; }
+  .task-top a { color: var(--text); text-decoration: none; }
+  .task-top a:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+  .sev-done .task-top { font-weight: 400; text-decoration: line-through; text-decoration-color: var(--line); }
+
+  .task-meta { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); }
+  .chip {
+    padding: 1px 7px; border-radius: 4px; font-size: 10.5px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .04em;
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--muted);
+  }
+  .chip.blocked { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
+  .chip.overdue { color: var(--warnish); border-color: color-mix(in srgb, var(--warnish) 35%, transparent); }
+  .chip.urgent  { color: var(--warnish); border-color: color-mix(in srgb, var(--warnish) 30%, transparent); }
+  .who.none { font-style: italic; opacity: .75; }
+  .ref { margin-left: auto; font-size: 10.5px; opacity: .6; font-variant-numeric: tabular-nums; }
+
+  .done-block { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 12px; }
+  .done-block summary {
+    cursor: pointer; font-size: 12px; color: var(--muted); list-style: none;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .done-block summary::-webkit-details-marker { display: none; }
+  .done-block summary::before { content: '▸'; font-size: 10px; transition: transform .15s; }
+  .done-block[open] summary::before { transform: rotate(90deg); }
+  .done-block summary:hover { color: var(--text); }
+  .done-block .task { margin-top: 6px; }
+
+  .h3-note { float: right; font-weight: 500; letter-spacing: 0; text-transform: none; opacity: .75; }
+
+  /* ---- alignment: readable nested structure, not a bullet wall ---- */
+  .brief h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .09em;
+    color: var(--accent); margin: 22px 0 8px; font-weight: 700;
+  }
+  .brief h2:first-child { margin-top: 0; }
+  .brief ul { margin: 0 0 10px; padding-left: 18px; }
+  .brief ul ul { margin: 5px 0 8px; padding-left: 16px; }
+  .brief li { margin-bottom: 5px; line-height: 1.55; }
+  .brief ul ul li { color: var(--muted); }
+  .brief ul ul li strong { color: var(--text); }
+  .brief > ul > li > strong:only-child,
+  .brief > ul > li > strong:first-child { color: var(--text); }
 
   .ask-row { display: flex; gap: 8px; }
   .ask-row .field { flex: 1; }
@@ -189,7 +241,7 @@
       </div>
 
       <div class="card">
-        <h3>Related ClickUp tasks</h3>
+        <h3>Related ClickUp tasks <span class="h3-note" id="tasks-note"></span></h3>
         <div id="tasks"></div>
       </div>
 
@@ -258,26 +310,37 @@ function inline(s) {
 
 function renderMarkdown(md) {
   const out = [];
-  let list = null;
-  const closeList = () => { if (list) { out.push('</ul>'); list = null; } };
+  // Stack of open <ul> indent levels. A flat renderer turned the model's nested
+  // bullets into siblings, so "Discussed in chat, but no task exists:" and its
+  // children all appeared at the same level and read as unrelated points.
+  const depths = [];
+  const closeTo = (indent) => {
+    while (depths.length && depths[depths.length - 1] > indent) { out.push('</ul>'); depths.pop(); }
+  };
+  const closeAll = () => { while (depths.length) { out.push('</ul>'); depths.pop(); } };
 
   for (const raw of String(md).split('\n')) {
     const line = raw.trimEnd();
-    if (!line.trim()) { closeList(); continue; }
+    if (!line.trim()) continue;
 
     const heading = line.match(/^#{1,6}\s+(.*)$/);
-    if (heading) { closeList(); out.push('<h2>' + inline(heading[1]) + '</h2>'); continue; }
+    if (heading) { closeAll(); out.push('<h2>' + inline(heading[1]) + '</h2>'); continue; }
 
-    const bullet = line.match(/^\s*(?:[-*+•]|\d+\.)\s+(.*)$/);
+    const bullet = line.match(/^(\s*)(?:[-*+•]|\d+\.)\s+(.*)$/);
     if (bullet) {
-      if (!list) { out.push('<ul>'); list = true; }
-      out.push('<li>' + inline(bullet[1]) + '</li>');
+      const indent = bullet[1].replace(/\t/g, '  ').length;
+      closeTo(indent);
+      if (!depths.length || depths[depths.length - 1] < indent) {
+        out.push('<ul>');
+        depths.push(indent);
+      }
+      out.push('<li>' + inline(bullet[2]) + '</li>');
       continue;
     }
-    closeList();
+    closeAll();
     out.push('<p>' + inline(line) + '</p>');
   }
-  closeList();
+  closeAll();
   return out.join('');
 }
 
@@ -358,27 +421,67 @@ async function select(id, forceRefresh = false) {
   loadCoherence(id, forceRefresh);
 }
 
-const STATUS_TONE = {
-  blocked: 'danger', 'not started': 'muted', intake: 'muted', backlog: 'muted',
-  'in progress': 'warn', 'client reviews': 'warn', 'new request': 'warn',
-  complete: 'ok', completed: 'ok', closed: 'ok', 'internal approved': 'ok',
-};
+const DONE = new Set(['complete','completed','closed','done','cancelled','canceled']);
+
+// Severity drives the left rail colour. A blocked urgent task and a finished one
+// must not look alike — the whole point of the panel is triage at a glance.
+function severity(t) {
+  if (t.isDone) return 'done';
+  const st = String(t.status || '').toLowerCase();
+  if (st === 'blocked') return 'blocked';
+  if (t.overdue) return 'overdue';
+  if (t.priority === 'urgent') return 'urgent';
+  return 'open';
+}
 
 function taskRow(t) {
-  const tone = STATUS_TONE[String(t.status || '').toLowerCase()] || 'muted';
-  const who = t.assignees.length ? t.assignees.join(', ') : 'unassigned';
-  const overdue = t.dueDate && Number(t.dueDate) < Date.now();
+  const sev = severity(t);
+  const who = t.assignees && t.assignees.length ? t.assignees.join(', ') : 'unassigned';
   const title = t.url
     ? '<a href="' + esc(t.url) + '" target="_blank" rel="noopener">' + esc(t.title) + '</a>'
     : esc(t.title);
-  return '<div class="task">'
-    + '<div class="task-top">' + (t.ref ? '<code>' + esc(t.ref) + '</code> ' : '') + title + '</div>'
+
+  const chips = [];
+  if (sev === 'blocked') chips.push('<span class="chip blocked">blocked</span>');
+  if (t.overdue && !t.isDone) chips.push('<span class="chip overdue">overdue</span>');
+  if (t.priority === 'urgent' && !t.isDone) chips.push('<span class="chip urgent">urgent</span>');
+  if (!chips.length) chips.push('<span class="chip">' + esc(t.status || 'unknown') + '</span>');
+
+  return '<div class="task sev-' + sev + '">'
+    + '<div class="task-top">' + title + '</div>'
     + '<div class="task-meta">'
-    + '<span class="tag ' + tone + '">' + esc(t.status || 'unknown') + '</span>'
-    + (t.priority ? '<span class="tag">' + esc(t.priority) + '</span>' : '')
-    + '<span>' + esc(who) + '</span>'
-    + (overdue ? '<span class="tag danger">overdue</span>' : '')
+    +   chips.join('')
+    +   '<span class="who' + (who === 'unassigned' ? ' none' : '') + '">' + esc(who) + '</span>'
+    +   (t.ref ? '<span class="ref">' + esc(t.ref) + '</span>' : '')
     + '</div></div>';
+}
+
+function renderTasks(related) {
+  const open = related.filter((t) => !t.isDone);
+  const done = related.filter((t) => t.isDone);
+
+  let html = '';
+  if (open.length) {
+    const boards = {};
+    for (const t of open) (boards[t.board || 'Unsorted'] ||= []).push(t);
+    html += Object.entries(boards)
+      .sort((a, b) => b[1].length - a[1].length)
+      .map(([board, items]) =>
+        '<p class="board-head">' + esc(board) + '<span class="count">' + items.length + '</span></p>'
+        + items.map(taskRow).join('')
+      ).join('');
+  } else {
+    html += '<p class="empty">No open tasks match this conversation.</p>';
+  }
+
+  // Finished work is context, not the headline — collapsed by default.
+  if (done.length) {
+    html += '<details class="done-block"><summary>'
+      + done.length + ' already completed'
+      + '<span class="dim"> — shown only to confirm chat items were finished</span>'
+      + '</summary>' + done.map(taskRow).join('') + '</details>';
+  }
+  return html;
 }
 
 async function loadCoherence(id, forceRefresh) {
@@ -391,14 +494,9 @@ async function loadCoherence(id, forceRefresh) {
       $('coherence').innerHTML = '<p class="empty">' + esc(data.reason || 'Nothing to compare yet.') + '</p>';
       return;
     }
-    const boards = {};
-    for (const t of data.related) (boards[t.board || 'Unsorted'] ||= []).push(t);
-    $('tasks').innerHTML = Object.entries(boards)
-      .sort((a, b) => b[1].length - a[1].length)
-      .map(([board, items]) =>
-        '<p class="board-head">📋 ' + esc(board) + ' <span class="dim">' + items.length + '</span></p>'
-        + items.map(taskRow).join('')
-      ).join('');
+    $('tasks-note').textContent = data.openCount != null
+      ? data.openCount + ' open' + (data.doneCount ? ' · ' + data.doneCount + ' done' : '') : '';
+    $('tasks').innerHTML = renderTasks(data.related);
     $('coherence').innerHTML = data.analysis
       ? renderMarkdown(data.analysis) + (data.cached ? '<p class="empty" style="font-size:12px">cached</p>' : '')
       : '<p class="empty">' + esc(data.reason || 'No analysis available.') + '</p>';
