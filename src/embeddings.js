@@ -16,25 +16,35 @@ const RATE_LIMIT_PER_MIN = Number.parseInt(process.env.EMBEDDING_RATE_PER_MIN ||
 const RATE_WINDOW_MS = 60_000;
 const MAX_ATTEMPTS = 5;
 
-// Texts per request. The quota counts requests, so a larger batch means a bulk
-// import costs proportionally less of the daily allowance.
-const EMBEDDING_BATCH_SIZE = Number.parseInt(process.env.EMBEDDING_BATCH_SIZE || '100', 10);
+// Texts per batch call. The API caps a batch at 100.
+//
+// MEASURED: the quota counts TEXTS, not HTTP requests. One batch of 100 consumed
+// the entire 100/minute allowance and the next batch was refused with
+// PerMinute limit: 100. Batching therefore buys latency (100 texts in ~3s
+// instead of ~100s) but does NOT buy quota — 1000 texts/day is a hard ceiling.
+const EMBEDDING_BATCH_SIZE = Math.min(100, Number.parseInt(process.env.EMBEDDING_BATCH_SIZE || '100', 10));
+
+const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
 let windowStart = Date.now();
 let windowCount = 0;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Block until a request slot is free in the current minute. */
-async function acquireSlot() {
+/**
+ * Block until `count` texts can be embedded in the current minute.
+ * Slots are per TEXT because that is what the quota counts — charging one slot
+ * per batch would let a single call of 100 blow straight through the limit.
+ */
+async function acquireSlots(count = 1) {
   for (;;) {
     const now = Date.now();
     if (now - windowStart >= RATE_WINDOW_MS) {
       windowStart = now;
       windowCount = 0;
     }
-    if (windowCount < RATE_LIMIT_PER_MIN) {
-      windowCount++;
+    if (windowCount + count <= RATE_LIMIT_PER_MIN) {
+      windowCount += count;
       return;
     }
     await sleep(windowStart + RATE_WINDOW_MS - now + 50);
@@ -67,22 +77,42 @@ function isDailyQuota(error) {
  * @param {string|string[]} contents
  * @returns {Promise<number[][]>} One vector per input, in order
  */
-async function embedWithRetry(contents) {
+async function embedWithRetry(texts) {
   let lastError;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    // One slot per REQUEST, not per text — the quota metric is
-    // embed_content_free_tier_requests, so a batch costs the same as a single.
-    await acquireSlot();
+    await acquireSlots(texts.length);
     try {
-      const response = await ai.models.embedContent({
-        model: EMBEDDING_MODEL,
-        contents,
-        config: {
-          outputDimensionality: EMBEDDING_DIMENSIONS,
-        },
-      });
-      return (response.embeddings || []).map((e) => e.values);
+      // The SDK's embedContent treats an array of strings as PARTS OF ONE
+      // document and returns a single vector for the lot. The batch endpoint
+      // has to be called directly to get one vector per text.
+      const res = await fetch(
+        `${API_BASE}/models/${EMBEDDING_MODEL}:batchEmbedContents?key=${encodeURIComponent(config.gemini.apiKey)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            requests: texts.map((text) => ({
+              model: `models/${EMBEDDING_MODEL}`,
+              content: { parts: [{ text }] },
+              outputDimensionality: EMBEDDING_DIMENSIONS,
+            })),
+          }),
+        }
+      );
+
+      const body = await res.json();
+      if (!res.ok || body.error) {
+        const error = new Error(JSON.stringify(body.error || body));
+        error.status = res.status;
+        throw error;
+      }
+
+      const vectors = (body.embeddings || []).map((e) => e.values);
+      if (vectors.length !== texts.length) {
+        throw new Error(`Batch returned ${vectors.length} vectors for ${texts.length} texts`);
+      }
+      return vectors;
     } catch (error) {
       lastError = error;
 
@@ -123,7 +153,7 @@ async function generateEmbedding(text) {
   if (!text || text.trim().length === 0) {
     throw new Error('Cannot generate embedding for empty text');
   }
-  const [vector] = await embedWithRetry(text);
+  const [vector] = await embedWithRetry([text]);
   if (!vector) throw new Error('Embedding response contained no vector');
   return vector;
 }
@@ -131,10 +161,10 @@ async function generateEmbedding(text) {
 /**
  * Embed many texts using as few API requests as possible.
  *
- * The SDK posts to :batchEmbedContents and `contents` accepts a list, so N texts
- * cost one request. The free-tier quota is counted in REQUESTS
- * (embed_content_free_tier_requests), which makes batching the difference
- * between a bulk import fitting inside a day's allowance or taking three days.
+ * MEASURED: the quota counts texts, not requests, so this does NOT reduce quota
+ * consumption — 1000 texts/day is a hard ceiling either way. What it buys is
+ * latency: 100 texts in roughly 3 seconds instead of 100 sequential calls. Use
+ * it for bulk work; the ceiling has to be met by embedding fewer things.
  *
  * @param {string[]} texts
  * @param {Object} [options]
