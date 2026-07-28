@@ -1,10 +1,34 @@
 # PM-Insight-Hub — Architecture
 
-How the bot reads, how it replies, and where the sharp edges are.
+How the system reads, how it answers, and where the sharp edges are.
+
+There are **three** surfaces over one shared core: a Slack bot, a web dashboard,
+and two CLI jobs (Slack backfill, ClickUp sync). They share `knowledge_context`
+and the retrieval layer in [`src/rag.js`](../src/rag.js).
 
 Every line reference points at real code. If a reference drifts, trust the code and fix this file.
 
 ---
+
+## 0. Surfaces at a glance
+
+| Surface | Entry point | What it does |
+|---|---|---|
+| Slack bot | `@mention` in a channel | Channel-scoped Q&A, replies in thread |
+| Dashboard | `/dashboard` (token-gated) | Channel briefing, related ClickUp tasks, chat-vs-board alignment, ask box |
+| `npm run backfill:slack` | CLI, dry-run by default | Imports channel history incl. thread replies |
+| `npm run sync:clickup` | CLI | Reconciles a ClickUp space into the index |
+| `npm run prune:tasks` | CLI, dry-run by default | Drops tasks completed beyond the retention window |
+
+**Access control.** The dashboard needs `DASHBOARD_TOKEN` and returns `503` if it
+is unset — it serves private client-channel content, so an unconfigured deploy
+must be closed, not open. Questions about the bot's own internals are restricted
+to `ADMIN_SLACK_USER_IDS`; unset means nobody.
+
+**Scoping.** Retrieval is scoped to the channel a question came from. Widening to
+the whole workspace is opt-in and requires explicit wording ("all channels").
+This exists because most indexed channels are private and members of one are not
+necessarily members of another.
 
 ## 1. The two paths
 
@@ -147,7 +171,7 @@ sequenceDiagram
 update fails, it falls back to posting a fresh threaded message
 ([line 88](../src/listeners/mentions.js#L88)) so an answer is never lost.
 
-### 3.2 Retrieval: two modes, one decision
+### 3.2 Retrieval: three modes, one decision
 
 This is the part worth understanding. **pgvector ranks by cosine similarity and has no
 concept of time**, so "the last 15 messages" is unanswerable by semantic search — no amount
@@ -156,15 +180,28 @@ of prompting fixes it. Intent is detected from wording at
 
 ```mermaid
 flowchart TD
-  Q["question"] --> D{"recency wording?<br/>last / latest / recent /<br/>catch me up / últimos / hoy"}
-  D -->|no| SEM["match_context RPC<br/>threshold 0.4, top 8<br/>ranked by similarity"]
+  Q["question"] --> E{"enumeration wording?<br/>list / every / all of / todos"}
+  E -->|yes| EN["read the WHOLE scope<br/>no embedding call at all"]
+  E -->|no| D{"recency wording?<br/>last / latest / catch me up"}
+  D -->|no| SEM["scoped vector search<br/>threshold 0.4, top 8"]
   D -->|yes| C{"explicit number?"}
   C -->|"'last 15 messages'"| EX["newest 15 by created_at<br/>EXACTLY that set"]
-  C -->|"'catch me up'"| HY["newest 15<br/>+ semantic hits not already included<br/>deduped by id"]
-  SEM --> CTX["context blocks"]
+  C -->|"'catch me up'"| HY["newest 15 + semantic extras<br/>deduped by id"]
+  EN --> CTX["context blocks<br/>+ COVERAGE note"]
+  SEM --> CTX
   EX --> CTX
   HY --> CTX
 ```
+
+**Enumeration is a read, not a search.** "List all the tasks" answered by
+similarity returns a top-8 slice, and the model — having no idea it received a
+slice — states that those 8 are the only items that exist. That is worse than
+truncation: it tells the reader data is missing when it is not. Enumeration now
+reads the scope directly, which is both exact and free of embedding calls, so it
+keeps working when the embedding quota is exhausted.
+
+**Every prompt carries a COVERAGE line** ("you were given 8 of 31 items"). Without
+it the model cannot distinguish a complete answer from a partial one.
 
 Why an explicit count returns *exactly* that set: padding it with semantic extras made the
 source footer report 20 items when 15 were asked for — the exact mismatch that made an
@@ -173,7 +210,10 @@ earlier reply look broken.
 | Knob | Value | Where |
 |---|---|---|
 | `SIMILARITY_THRESHOLD` | `0.4` | [`rag.js:33`](../src/rag.js#L33) |
-| `MAX_RESULTS` (semantic) | `8` | [`rag.js:34`](../src/rag.js#L34) |
+| `MAX_RESULTS` (semantic) | `8` | [`rag.js`](../src/rag.js) |
+| `MAX_ENUMERATION_RESULTS` | `60` | [`rag.js`](../src/rag.js) |
+| `RELATED_TASK_THRESHOLD` | `0.68` | [`rag.js`](../src/rag.js) |
+| `CLICKUP_RETENTION_DAYS` | `60` | env |
 | `DEFAULT_RECENCY_COUNT` | `15` | [`rag.js:39`](../src/rag.js#L39) |
 | `MAX_RECENCY_COUNT` | `30` | [`rag.js:40`](../src/rag.js#L40) |
 | `MAX_OUTPUT_TOKENS` | `4096` | [`rag.js:32`](../src/rag.js#L32) |
@@ -252,6 +292,61 @@ Chain: `gemini-2.5-flash` → `gemini-flash-latest` → `gemini-3.5-flash`.
 
 ---
 
+## 3.7 ClickUp: sync, retention, and the cross-source join
+
+**Sync reconciles, it does not replace.** Each task's embedded text is hashed; an
+unchanged task is skipped entirely. Without this, a daily sync of 100 clients
+re-embeds everything every day and becomes the dominant cost of the system. Rows
+whose task has vanished from the board are deleted, so removed work stops
+answering questions.
+
+**`external_id` is the LIST id, not the task id.** Retrieval scopes by
+`external_id`, so a task id there would make every task its own island and no
+board could be queried as a whole. Task identifiers live in `metadata`.
+
+**Retention.** Tasks completed more than `CLICKUP_RETENTION_DAYS` (60) ago are
+dropped. This is a task sanitizer for pushing open work, not an archive — and
+long-closed work buries the open items a briefing is about. The sync enforces the
+window on every run; `npm run prune:tasks` exists so the window still advances
+when no sync has run.
+
+**Ingest screening.** Two properties of the real board drive this: placeholder
+tasks (`Test Task`, `ssf`, `rr`) are skipped, and duplicates are collapsed on
+normalized name within a list — the board genuinely contains the same task three
+times (e.g. WLMD-267 / -277 / -297).
+
+### Relating tasks to a channel
+
+The dashboard does not list boards. ClickUp is reached **through** a channel, so
+the unit of navigation is the project.
+
+Matching by client name was tried and **rejected**: only ~4% of internal tasks
+mention any channel's client, because channels are per-client while the internal
+tasks are per-platform-feature. A channel discussing an intake bug relates to
+`Intake Remains Open After Completion`, which names no client at all.
+
+So the join is **topical**: the channel's own recent messages act as query
+vectors against ClickUp rows. Those vectors were already paid for at index time,
+so this costs **zero embedding calls**.
+
+```mermaid
+flowchart LR
+  M["recent Slack messages<br/>(stored vectors reused)"] --> S["vector search<br/>source = clickup<br/>threshold 0.68"]
+  S --> R["related tasks<br/>grouped by board"]
+  R --> C["coherence pass<br/>chat vs board"]
+  C --> O["Alignment / Disconnects /<br/>Suggested Next Actions"]
+```
+
+The threshold is higher than same-source search (0.68 vs 0.4): a Slack message
+and a task are written differently, so weak cross-source similarity is noise.
+
+**Why the board matters.** A task's list is its workstream and its status is its
+stage, so `board · status · priority · assigned` is carried into the model's
+context. Before this the model read task titles with no idea where any of them
+stood. The board distribution is itself a signal — `#wlmd-internal-design-team`
+matches mostly the *Design* board while a client channel matches *Active Tasks
+List*.
+
 ## 4. Data model
 
 One table does everything. Slack messages and ClickUp events share a schema so a single
@@ -326,14 +421,14 @@ Ordered by how likely they are to bite.
 
 | # | Limitation | Impact | Sketch of a fix |
 |---|---|---|---|
-| 1 | Indexing fails **silently** on a Gemini 429 | Bot goes blind with no signal; answers just get worse | Counter + threshold alert; dead-letter the failed text for retry |
-| 2 | "this channel" / "here" is ignored | Channel-scoped questions answered workspace-wide | Pass `event.channel` into `answerQuestion`; filter or boost on it |
-| 3 | Aggregate questions can't work | "Who sends the most messages per day?" needs `GROUP BY author_id`, not top-8 retrieval | Detect aggregate intent, route to a SQL path instead of RAG |
-| 4 | No dedupe | Redelivered events duplicate rows and double-count | Unique index on `(source, external_id, metadata->>'ts')` |
-| 5 | No history backfill | Empty until traffic accumulates | One-off `conversations.history` import (needs `channels:history`) |
-| 6 | ClickUp inactive | Task questions always "not indexed" | Set `CLICKUP_WEBHOOK_SECRET`, register the webhook |
-| 7 | Free-tier quota | Primary model already exhausts daily | Enable billing |
-| 8 | Author IDs never resolved | `author_id` stored, never used in answers | `<@U…>` renders names free — surface it in context headers |
+| 1 | **Gemini free tier is the binding constraint** — 1000 embeddings/day, 100/min | Backfill and sync cannot complete in a day; live indexing competes with them | Enable billing. Everything else here is downstream of this |
+| 2 | **`match_context_scoped` migration not applied** | Vector search falls back to in-process scoring, capped at 500 rows per scope — silently ignores older rows past that | Run the function at the end of [`sql/schema.sql`](../sql/schema.sql) in the Supabase SQL editor |
+| 3 | Aggregate questions can't work | "Who sends the most messages per day?" needs `GROUP BY author_id`, not retrieval | Detect aggregate intent, route to SQL |
+| 4 | No dedupe on Slack rows | A redelivered event duplicates a row | Unique index on `(source, external_id, metadata->>'ts')` |
+| 5 | ClickUp webhook inactive | Board state is only as fresh as the last sync | Set `CLICKUP_WEBHOOK_SECRET`, register the webhook |
+| 6 | Slack ClickUp-notification channels are unusable | Notifications carry no task identity — no name, no id, empty attachments | Rely on the API sync, or reconfigure ClickUp to include the task name |
+| 7 | Unbounded Slack growth | ~1.1 GB/yr at 100 channels; free tier is 0.5 GB | Supabase Pro, or a rolling window + distilled insights |
+| 8 | Structured task filters go through RAG | "what's unassigned/overdue" is exact in SQL, approximate via vectors | Query `metadata` directly for those |
 
 ---
 

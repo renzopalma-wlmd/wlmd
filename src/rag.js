@@ -3,7 +3,9 @@ const config = require('./config');
 const { generateEmbedding } = require('./embeddings');
 const {
   searchContextScoped,
+  countScope,
   getRecentInChannel,
+  getRecentWithEmbeddings,
   getRecentAcrossSources,
 } = require('./supabase');
 const { channelRef, dateRef, rowEpoch } = require('./utils/slack-format');
@@ -36,6 +38,19 @@ const BASE_BACKOFF_MS = 350;
 const MAX_OUTPUT_TOKENS = 4096;
 const SIMILARITY_THRESHOLD = 0.4;
 const MAX_RESULTS = 8;
+
+// "List every task", "what are all the clients" are enumeration questions, not
+// similarity questions. Answering them from a top-8 slice produced a reply that
+// listed 8 of 31 tasks and stated those were the only ones that existed — the
+// reader then reasonably concluded the data was missing. Enumeration gets a much
+// wider read, and coverage is always disclosed (see COVERAGE note below).
+const ENUMERATION_RE =
+  /\b(list|enumerate|all of|every|each of|full list|complete list|show me all|todos|todas|lista completa)\b/i;
+const MAX_ENUMERATION_RESULTS = 60;
+
+// Cross-source matches need a higher bar than same-source search: a Slack
+// message and a task are written differently, so weak similarity is noise.
+const RELATED_TASK_THRESHOLD = 0.68;
 
 // Recency requests are answered from a time-ordered read, so they need their
 // own ceiling — high enough for "last 30 messages", low enough to stay inside
@@ -234,7 +249,17 @@ function buildContextHeader(row, index) {
 
   const channel = row.source === 'slack' ? channelRef(row.metadata?.channel || row.external_id) : null;
   if (channel) parts.push(channel);
-  if (row.source === 'clickup' && row.metadata?.task_id) parts.push(`task ${row.metadata.task_id}`);
+
+  // For a task, WHERE it sits is as informative as what it says: the list is
+  // the workstream and the status is its stage. Without these the model was
+  // reading task titles with no idea where any of them stood.
+  if (row.source === 'clickup') {
+    if (row.metadata?.list_name) parts.push(`board: ${row.metadata.list_name}`);
+    if (row.metadata?.status) parts.push(`status: ${row.metadata.status}`);
+    if (row.metadata?.priority) parts.push(`priority: ${row.metadata.priority}`);
+    const who = row.metadata?.assignees;
+    if (Array.isArray(who) && who.length) parts.push(`assigned: ${who.join(', ')}`);
+  }
 
   const when = dateRef(rowEpoch(row));
   if (when) parts.push(when);
@@ -283,10 +308,23 @@ async function answerQuestion(question, { channelId = null } = {}) {
   logger.info('RAG pipeline started', {
     question: question.substring(0, 100),
     mode: intent.isRecency ? 'recency+semantic' : 'semantic',
+    enumerating: ENUMERATION_RE.test(question),
     requestedCount: intent.requestedCount,
     scope,
     channelId,
   });
+
+  const enumerating = ENUMERATION_RE.test(question);
+
+  // "List everything in this channel" is a read, not a search. Answering it by
+  // similarity is both wrong (a top-N slice) and needlessly fragile — it spends
+  // an embedding call, so the feature dies whenever the embedding quota is
+  // exhausted. Read the scope directly instead: exact, and zero quota.
+  if (enumerating && scopedToChannel && !intent.isRecency) {
+    const all = await getRecentInChannel(channelId, MAX_ENUMERATION_RESULTS);
+    logger.info(`Enumeration read returned ${all.length} items`, { channelId, embeddingCalls: 0 });
+    return finishAnswer({ question, results: all, scope, scopedToChannel, channelId, intent });
+  }
 
   // Step 1: Embed the question
   const queryEmbedding = await generateEmbedding(question);
@@ -298,7 +336,7 @@ async function answerQuestion(question, { channelId = null } = {}) {
   // cover, so "the latest decision on pricing" still finds the right thread.
   const semantic = await searchContextScoped(queryEmbedding, {
     threshold: SIMILARITY_THRESHOLD,
-    count: MAX_RESULTS,
+    count: enumerating ? MAX_ENUMERATION_RESULTS : MAX_RESULTS,
     externalId: scopedToChannel ? channelId : null,
   });
 
@@ -326,6 +364,15 @@ async function answerQuestion(question, { channelId = null } = {}) {
     scope,
   });
 
+  return finishAnswer({ question, results, scope, scopedToChannel, channelId, intent });
+}
+
+/**
+ * Shared tail of the pipeline: build the prompt, generate, shape the result.
+ * Extracted so the enumeration read and the semantic path cannot drift apart —
+ * both must disclose coverage and both must return the same shape.
+ */
+async function finishAnswer({ question, results, scope, scopedToChannel, channelId, intent }) {
   // Step 3: Build the prompt
   const contextString = buildContextString(results);
   const countNote =
@@ -344,11 +391,22 @@ async function answerQuestion(question, { channelId = null } = {}) {
     present.size ? [...present].join(', ') : 'none'
   }. If the question asks about a source that is absent, say plainly that nothing from that source is indexed yet — do not answer it from the other source.`;
 
+  // Coverage, always. The model has no way to know whether it received the whole
+  // scope or a slice of it, and left to guess it asserts completeness.
+  const scopeTotal = await countScope({ externalId: scopedToChannel ? channelId : null });
+  const coverageNote =
+    scopeTotal > 0
+      ? `\n\nCOVERAGE: you were given ${results.length} of ${scopeTotal} items indexed for this scope.` +
+        (results.length < scopeTotal
+          ? ' There are MORE items you cannot see. Never say or imply that these are the only items that exist — if the question implies completeness, state how many you are working from and offer to narrow the question.'
+          : ' That is everything indexed for this scope.')
+      : '';
+
   const scopeNote = scopedToChannel
     ? '\n\nThis context is everything indexed for the CURRENT channel and nothing else. Answer only about this channel. Do not mention other channels or projects, and do not suggest looking in them.'
     : '\n\nThis context spans multiple channels because the asker explicitly requested a workspace-wide search.';
 
-  const userPrompt = `Context:\n${contextString}${orderNote}${countNote}${inventoryNote}${scopeNote}\n\n---\nQuestion: ${question}`;
+  const userPrompt = `Context:\n${contextString}${orderNote}${countNote}${inventoryNote}${scopeNote}${coverageNote}\n\n---\nQuestion: ${question}`;
 
   // Step 4: Generate the answer
   const { response, model, attempts } = await generateWithFallback({ userPrompt });
@@ -389,6 +447,7 @@ async function answerQuestion(question, { channelId = null } = {}) {
     })),
   };
 }
+
 
 // A briefing is read on a screen, not in Slack, so it asks for Markdown and a
 // fixed section order the UI can rely on. Empty sections are dropped rather
@@ -468,9 +527,124 @@ async function briefChannel(channelId, { limit = 30, kind = 'channel' } = {}) {
   };
 }
 
+// Comparing intent against execution. Kept separate from the briefing prompt so
+// it cannot drift into summarising — the only thing worth reporting here is
+// where the conversation and the board disagree.
+const COHERENCE_SYSTEM_PROMPT = `You compare what a team is SAYING in a Slack channel against what their ClickUp tasks CLAIM, and report only where the two disagree.
+
+Output Markdown with these sections, omitting any you have no evidence for:
+
+## Alignment
+Where conversation and tasks agree. One or two lines, no more.
+
+## Disconnects
+The valuable part. Each bullet is one concrete mismatch. Always name the board a task sits on — the list is its workstream and the status is its stage, so "blocked on the Design board" and "blocked on Active Tasks List" mean different things:
+- Discussed in chat, but no task exists
+- A task says one status while chat says something different (e.g. task "in progress", chat says blocked or already shipped)
+- A task nobody has mentioned in conversation at all
+- Work chat treats as urgent that sits unassigned or with no due date
+
+## Suggested Next Actions
+What the PM should do about the disconnects specifically.
+
+Rules:
+- Reference tasks by their [WLMD-…] id so they can be found.
+- Base everything ONLY on what you are given. Never invent a task or a conversation.
+- If there is genuinely no disconnect, say so in one sentence and stop.
+- Slack mrkdwn is not used here; this is rendered as Markdown on a web page.
+- Never print raw channel IDs or Unix timestamps.
+- Be terse and specific. Vague observations are worthless to a PM.`;
+
+/**
+ * ClickUp tasks topically related to a channel's recent conversation.
+ *
+ * Uses the channel's own stored message vectors as queries, so this costs zero
+ * embedding calls. Name matching was tried and rejected: only ~4% of internal
+ * tasks mention a client, because channels are per-client while the tasks are
+ * per-platform-feature.
+ *
+ * @param {string} channelId
+ * @param {Object} [options]
+ * @param {number} [options.messages=8] - Recent messages used as queries
+ * @param {number} [options.limit=10] - Max related tasks returned
+ * @returns {Promise<Array>}
+ */
+async function findRelatedTasks(channelId, { messages = 8, limit = 10 } = {}) {
+  const queries = await getRecentWithEmbeddings(channelId, messages);
+  if (queries.length === 0) return [];
+
+  const best = new Map();
+  for (const query of queries) {
+    const hits = await searchContextScoped(query.embedding, {
+      threshold: RELATED_TASK_THRESHOLD,
+      count: 5,
+      source: 'clickup',
+    });
+    for (const hit of hits) {
+      const prior = best.get(hit.id);
+      if (!prior || prior.similarity < hit.similarity) {
+        best.set(hit.id, { ...hit, matchedVia: query.content.slice(0, 120) });
+      }
+    }
+  }
+
+  const related = [...best.values()].sort((a, b) => b.similarity - a.similarity).slice(0, limit);
+  logger.info(`Related tasks resolved`, { channelId, queries: queries.length, related: related.length });
+  return related;
+}
+
+/**
+ * Report where a channel's conversation and its related tasks disagree.
+ * @param {string} channelId
+ * @returns {Promise<{analysis: ?string, related: Array, messageCount: number, empty: boolean}>}
+ */
+async function analyzeCoherence(channelId) {
+  const [conversation, related] = await Promise.all([
+    getRecentInChannel(channelId, 25),
+    findRelatedTasks(channelId),
+  ]);
+
+  if (conversation.length === 0 || related.length === 0) {
+    return {
+      analysis: null,
+      related,
+      messageCount: conversation.length,
+      empty: true,
+      reason: conversation.length === 0 ? 'no conversation indexed' : 'no related tasks found',
+    };
+  }
+
+  const userPrompt = [
+    'CONVERSATION in this channel, oldest first:',
+    buildContextString([...conversation].reverse()),
+    '',
+    'RELATED CLICKUP TASKS (matched by topic, each with status, priority, assignee):',
+    buildContextString(related),
+    '',
+    '---',
+    'Compare them and report the disconnects.',
+  ].join('\n');
+
+  const { response, model } = await generateWithFallback({
+    userPrompt,
+    systemInstruction: COHERENCE_SYSTEM_PROMPT,
+  });
+
+  logger.info('Coherence analysis generated', { channelId, related: related.length, model });
+  return {
+    analysis: response.text || null,
+    related,
+    messageCount: conversation.length,
+    empty: false,
+    model,
+  };
+}
+
 module.exports = {
   answerQuestion,
   briefChannel,
+  findRelatedTasks,
+  analyzeCoherence,
   detectRecencyIntent,
   detectCrossChannelIntent,
   detectMetaIntent,

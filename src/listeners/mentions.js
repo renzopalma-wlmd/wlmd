@@ -120,14 +120,15 @@ function registerMentionListener(app) {
       const status = typeof error?.status === 'number'
         ? error.status
         : Number.parseInt((String(error?.message || '').match(/"code"\s*:\s*(\d{3})/) || [])[1], 10);
-      const overloaded = status === 503 || status === 429;
-
-      await say({
-        text: overloaded
+      // A daily quota breach is not transient — telling someone to "try again in
+      // a moment" would be false. Say what actually has to happen.
+      const text = error?.dailyQuotaExhausted
+        ? "📉 I've hit today's AI usage limit, so I can't search right now. This resets tomorrow. Ask me to *list* the recent messages and I can still answer that without searching."
+        : status === 503 || status === 429
           ? '⏳ The AI model is overloaded right now and did not recover after several retries. Please ask again in a moment.'
-          : '❌ Sorry, I hit an error while processing your question. Please try again.',
-        thread_ts: event.ts,
-      });
+          : '❌ Sorry, I hit an error while processing your question. Please try again.';
+
+      await say({ text, thread_ts: event.ts });
     }
   });
 
