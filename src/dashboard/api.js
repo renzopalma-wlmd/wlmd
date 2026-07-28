@@ -9,6 +9,20 @@ const logger = require('../utils/logger');
 
 const slack = new WebClient(config.slack.botToken);
 
+// Finished work is only useful for confirming that something raised in chat got
+// done. It must not compete for attention with what is still open.
+const DONE_STATUSES = new Set(['complete', 'completed', 'closed', 'done', 'cancelled', 'canceled']);
+
+// Rank what a PM should look at first: blocked before urgent-but-moving, and
+// anything overdue ahead of the rest.
+const STATUS_WEIGHT = { blocked: 0, 'not started': 2, intake: 3, backlog: 3 };
+function taskRank(t) {
+  if (t.isDone) return 100;
+  const base = STATUS_WEIGHT[String(t.status || '').toLowerCase()] ?? 1;
+  const urgency = t.priority === 'urgent' ? -0.5 : t.priority === 'high' ? -0.25 : 0;
+  return base + urgency + (t.overdue ? -0.4 : 0);
+}
+
 // Briefings cost a Gemini generation each, and the free tier is already tight.
 // Selecting a channel twice in a row shouldn't spend two calls.
 const BRIEFING_TTL_MS = 5 * 60 * 1000;
@@ -370,6 +384,14 @@ function createDashboardRouter() {
           }))
         ),
       };
+      for (const t of payload.related) {
+        t.isDone = DONE_STATUSES.has(String(t.status || '').toLowerCase());
+        t.overdue = Boolean(t.dueDate) && Number(t.dueDate) < Date.now();
+      }
+      payload.related.sort((a, b) => taskRank(a) - taskRank(b) || b.similarity - a.similarity);
+      payload.openCount = payload.related.filter((t) => !t.isDone).length;
+      payload.doneCount = payload.related.length - payload.openCount;
+
       coherenceCache.set(id, { at: Date.now(), payload });
       res.json({ ...payload, cached: false });
     } catch (error) {
