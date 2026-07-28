@@ -93,6 +93,23 @@
   .brief code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
   .mention { color: var(--accent); font-weight: 500; }
 
+  .board-head {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--accent);
+    margin: 16px 0 2px; font-weight: 600;
+  }
+  #tasks .board-head:first-child { margin-top: 0; }
+  .task { padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .task:last-child { border-bottom: 0; }
+  .task-top { font-weight: 500; margin-bottom: 4px; }
+  .task-top a { color: var(--text); text-decoration: none; border-bottom: 1px solid var(--line); }
+  .task-top a:hover { color: var(--accent); }
+  .task-top code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 12px; color: var(--muted); }
+  .task-meta { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .tag { padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel-2); }
+  .tag.ok { color: #3ecf8e; } .tag.warn { color: #f0b429; }
+  .tag.danger { color: var(--danger); } .tag.muted { color: var(--muted); }
+  .dim { opacity: .7; }
+
   .ask-row { display: flex; gap: 8px; }
   .ask-row .field { flex: 1; }
   .answer { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
@@ -135,7 +152,7 @@
   <aside>
     <div class="brand">
       <h1>PM Insight Hub</h1>
-      <span>Channels &amp; boards</span>
+      <span>Project intelligence</span>
     </div>
     <div class="search">
       <input id="filter" class="field" type="search" placeholder="Find a channel…" autocomplete="off">
@@ -146,7 +163,7 @@
   <main>
     <div id="placeholder">
       <div class="head"><h2>Pick a project</h2></div>
-      <p class="sub">Select a Slack channel or a ClickUp board to generate a live status briefing, then ask follow-up questions scoped to it.</p>
+      <p class="sub">Select a channel to get a status briefing, the ClickUp tasks it relates to, and where the two disagree.</p>
     </div>
 
     <div id="detail" hidden>
@@ -166,6 +183,16 @@
       </div>
 
       <div class="card">
+        <h3>Related ClickUp tasks</h3>
+        <div id="tasks"></div>
+      </div>
+
+      <div class="card">
+        <h3>Alignment — chat vs board</h3>
+        <div class="brief" id="coherence"></div>
+      </div>
+
+      <div class="card">
         <h3>Ask about this channel</h3>
         <div class="ask-row">
           <input id="q" class="field" placeholder="e.g. what is blocking the launch?" autocomplete="off">
@@ -181,7 +208,6 @@
 const $ = (id) => document.getElementById(id);
 let token = sessionStorage.getItem('pmih_token') || '';
 let channels = [];
-let boards = [];
 let current = null;
 
 async function api(pathname, options = {}) {
@@ -265,9 +291,8 @@ function renderChannels() {
   const match = (name) => !term || name.toLowerCase().includes(term);
 
   const shownChannels = channels.filter((c) => match(c.name));
-  const shownBoards = boards.filter((b) => match(b.name) || match(b.folderName || ''));
 
-  if (!shownChannels.length && !shownBoards.length) {
+  if (!shownChannels.length) {
     list.innerHTML = '<p class="empty" style="padding:10px 11px">Nothing matches.</p>';
     return;
   }
@@ -278,20 +303,7 @@ function renderChannels() {
       <span class="meta">${c.indexedMessages} indexed · ${esc(relative(c.lastActivity))}</span>
     </button>`;
 
-  const boardRow = (b) => `
-    <button class="chan" data-id="${esc(b.id)}" aria-current="${current === b.id}">
-      <span class="row1">📋 ${esc(b.name)}</span>
-      <span class="meta">${b.indexedTasks} tasks${b.folderName ? ' · ' + esc(b.folderName) : ''}</span>
-    </button>`;
-
-  let html = '';
-  if (shownChannels.length) {
-    html += '<p class="group">Slack channels</p>' + shownChannels.map(chanRow).join('');
-  }
-  if (shownBoards.length) {
-    html += '<p class="group">ClickUp boards</p>' + shownBoards.map(boardRow).join('');
-  }
-  list.innerHTML = html;
+  list.innerHTML = shownChannels.map(chanRow).join('');
 
   for (const el of list.querySelectorAll('.chan')) {
     el.onclick = () => select(el.dataset.id);
@@ -302,39 +314,79 @@ function renderChannels() {
 async function select(id, forceRefresh = false) {
   current = id;
   const channel = channels.find((c) => c.id === id);
-  const board = boards.find((b) => b.id === id);
-  if (!channel && !board) return;
+  if (!channel) return;
   renderChannels();
 
   $('placeholder').hidden = true;
   $('detail').hidden = false;
-  if (board) {
-    $('ch-name').textContent = '📋 ' + board.name;
-    $('ch-pill').textContent = board.indexedTasks + ' tasks indexed';
-    $('ch-sub').textContent = board.folderName ? 'ClickUp · ' + board.folderName : 'ClickUp board';
-    $('q').placeholder = 'e.g. what is urgent and unassigned?';
-  } else {
-    $('ch-name').textContent = (channel.isPrivate ? '🔒 ' : '#') + channel.name;
-    $('ch-pill').textContent = channel.indexedMessages + ' messages indexed';
-    $('ch-sub').textContent = 'Last activity ' + relative(channel.lastActivity);
-    $('q').placeholder = 'e.g. what is blocking the launch?';
-  }
+  $('ch-name').textContent = (channel.isPrivate ? '🔒 ' : '#') + channel.name;
+  $('ch-pill').textContent = channel.indexedMessages + ' messages indexed';
+  $('ch-sub').textContent = 'Last activity ' + relative(channel.lastActivity);
   $('answer').innerHTML = '';
   $('brief').innerHTML = '<span class="spinner"></span>Reading the channel and writing a briefing…';
 
   try {
     const data = await api('/api/channels/' + id + '/briefing' + (forceRefresh ? '?refresh=1' : ''));
     if (data.empty) {
-      $('brief').innerHTML = board
-        ? '<p class="empty">No tasks indexed for this board yet. Run <code>npm run sync:clickup</code> to pull it in.</p>'
-        : '<p class="empty">Nothing indexed for this channel yet. The bot only sees messages posted while it is running — activity here will appear as people talk.</p>';
+      $('brief').innerHTML = '<p class="empty">Nothing indexed for this channel yet. The bot only sees messages posted while it is running — activity here will appear as people talk.</p>';
       return;
     }
     $('brief').innerHTML = renderMarkdown(data.briefing)
       + '<p class="empty" style="margin-top:16px;font-size:12px">Based on ' + data.messageCount
-      + (board ? ' tasks' : ' recent messages') + (data.cached ? ' · cached' : '') + '</p>';
+      + ' recent messages' + (data.cached ? ' · cached' : '') + '</p>';
   } catch (err) {
     $('brief').innerHTML = '<p class="empty">' + esc(err.message) + '</p>';
+  }
+
+  loadCoherence(id, forceRefresh);
+}
+
+const STATUS_TONE = {
+  blocked: 'danger', 'not started': 'muted', intake: 'muted', backlog: 'muted',
+  'in progress': 'warn', 'client reviews': 'warn', 'new request': 'warn',
+  complete: 'ok', completed: 'ok', closed: 'ok', 'internal approved': 'ok',
+};
+
+function taskRow(t) {
+  const tone = STATUS_TONE[String(t.status || '').toLowerCase()] || 'muted';
+  const who = t.assignees.length ? t.assignees.join(', ') : 'unassigned';
+  const overdue = t.dueDate && Number(t.dueDate) < Date.now();
+  const title = t.url
+    ? '<a href="' + esc(t.url) + '" target="_blank" rel="noopener">' + esc(t.title) + '</a>'
+    : esc(t.title);
+  return '<div class="task">'
+    + '<div class="task-top">' + (t.ref ? '<code>' + esc(t.ref) + '</code> ' : '') + title + '</div>'
+    + '<div class="task-meta">'
+    + '<span class="tag ' + tone + '">' + esc(t.status || 'unknown') + '</span>'
+    + (t.priority ? '<span class="tag">' + esc(t.priority) + '</span>' : '')
+    + '<span>' + esc(who) + '</span>'
+    + (overdue ? '<span class="tag danger">overdue</span>' : '')
+    + '</div></div>';
+}
+
+async function loadCoherence(id, forceRefresh) {
+  $('tasks').innerHTML = '<span class="spinner"></span>Matching tasks to this conversation…';
+  $('coherence').innerHTML = '';
+  try {
+    const data = await api('/api/channels/' + id + '/coherence' + (forceRefresh ? '?refresh=1' : ''));
+    if (!data.related.length) {
+      $('tasks').innerHTML = '<p class="empty">No ClickUp tasks match what this channel is discussing.</p>';
+      $('coherence').innerHTML = '<p class="empty">' + esc(data.reason || 'Nothing to compare yet.') + '</p>';
+      return;
+    }
+    const boards = {};
+    for (const t of data.related) (boards[t.board || 'Unsorted'] ||= []).push(t);
+    $('tasks').innerHTML = Object.entries(boards)
+      .sort((a, b) => b[1].length - a[1].length)
+      .map(([board, items]) =>
+        '<p class="board-head">📋 ' + esc(board) + ' <span class="dim">' + items.length + '</span></p>'
+        + items.map(taskRow).join('')
+      ).join('');
+    $('coherence').innerHTML = data.analysis
+      ? renderMarkdown(data.analysis) + (data.cached ? '<p class="empty" style="font-size:12px">cached</p>' : '')
+      : '<p class="empty">' + esc(data.reason || 'No analysis available.') + '</p>';
+  } catch (err) {
+    $('tasks').innerHTML = '<p class="empty">' + esc(err.message) + '</p>';
   }
 }
 
@@ -357,8 +409,7 @@ async function ask() {
       body: JSON.stringify({ question }),
     });
     block.querySelector('.a').innerHTML = renderMarkdown(data.answer)
-      + '<p class="empty" style="font-size:12px">' + data.sourceCount + ' items from this '
-      + (boards.some((b) => b.id === current) ? 'board' : 'channel') + '</p>';
+      + '<p class="empty" style="font-size:12px">' + data.sourceCount + ' messages from this channel</p>';
   } catch (err) {
     block.querySelector('.a').innerHTML = '<span class="empty">' + esc(err.message) + '</span>';
   } finally {
@@ -373,7 +424,6 @@ async function start() {
   try {
     const data = await api('/api/channels');
     channels = data.channels || [];
-    boards = data.boards || [];
     renderChannels();
   } catch (err) {
     $('chan-list').innerHTML = '<p class="empty" style="padding:10px 11px">' + esc(err.message) + '</p>';

@@ -1,12 +1,14 @@
 {
   "name": "pm-insight-hub",
   "version": "1.0.0",
-  "description": "RAG-powered PM workspace intelligence bot — Slack + ClickUp + Supabase + Gemini",
+  "description": "RAG-powered PM workspace intelligence bot \u2014 Slack + ClickUp + Supabase + Gemini",
   "main": "app.js",
   "scripts": {
     "start": "node app.js",
     "dev": "npx nodemon app.js",
-    "sync:clickup": "node scripts/sync-clickup.js"
+    "sync:clickup": "node scripts/sync-clickup.js",
+    "backfill:slack": "node scripts/backfill-slack.js",
+    "prune:tasks": "node scripts/prune-tasks.js"
   },
   "dependencies": {
     "@slack/bolt": "^4.1.0",

@@ -43,28 +43,6 @@ async function insertContext({ source, externalId, authorId, content, metadata =
   return data;
 }
 
-/**
- * Search for similar context using the match_context RPC function.
- * @param {number[]} queryEmbedding - 1536-dim query embedding
- * @param {number} [threshold=0.5] - Minimum similarity threshold
- * @param {number} [count=5] - Maximum number of results
- * @returns {Promise<Array>} Matching context entries
- */
-async function searchContext(queryEmbedding, threshold = 0.5, count = 5) {
-  const { data, error } = await supabase.rpc('match_context', {
-    query_embedding: queryEmbedding,
-    match_threshold: threshold,
-    match_count: count,
-  });
-
-  if (error) {
-    logger.error('Context search failed', { error: error.message });
-    throw error;
-  }
-
-  logger.info(`Context search returned ${data.length} results`);
-  return data;
-}
 
 /**
  * Per-channel indexing stats, for the dashboard channel list.
@@ -95,40 +73,31 @@ async function getChannelStats() {
   return stats;
 }
 
+
 /**
- * Indexed ClickUp boards (lists), for the dashboard sidebar. Derived from what
- * has actually been synced rather than from ClickUp, so the UI never offers a
- * board with nothing behind it.
- * @returns {Promise<Array<{id: string, name: string, folderName: ?string, indexedTasks: number, lastActivity: ?string}>>}
+ * How many rows exist in a scope, regardless of what retrieval returned.
+ *
+ * Without this the model cannot tell the difference between "these are all the
+ * tasks" and "these are the 8 the search handed me", and it will confidently
+ * assert the former. That is worse than truncation: it tells the reader data
+ * does not exist when it does.
+ *
+ * @param {Object} [scope]
+ * @param {string} [scope.source]
+ * @param {string} [scope.externalId]
+ * @returns {Promise<number>}
  */
-async function getBoardStats() {
-  const { data, error } = await supabase
-    .from('knowledge_context')
-    .select('external_id, created_at, metadata')
-    .eq('source', 'clickup');
+async function countScope({ source = null, externalId = null } = {}) {
+  let query = supabase.from('knowledge_context').select('id', { count: 'exact', head: true });
+  if (source) query = query.eq('source', source);
+  if (externalId) query = query.eq('external_id', externalId);
 
+  const { count, error } = await query;
   if (error) {
-    logger.error('Failed to load board stats', { error: error.message });
-    throw error;
+    logger.warn('Could not count scope', { error: error.message, source, externalId });
+    return 0;
   }
-
-  const boards = new Map();
-  for (const row of data) {
-    const id = row.metadata?.list_id || row.external_id;
-    if (!id) continue;
-    const entry = boards.get(id) || {
-      id,
-      name: row.metadata?.list_name || id,
-      folderName: row.metadata?.folder_name || null,
-      indexedTasks: 0,
-      lastActivity: null,
-    };
-    entry.indexedTasks++;
-    if (!entry.lastActivity || row.created_at > entry.lastActivity) entry.lastActivity = row.created_at;
-    boards.set(id, entry);
-  }
-
-  return [...boards.values()].sort((a, b) => b.indexedTasks - a.indexedTasks);
+  return count || 0;
 }
 
 /** Cosine similarity between two equal-length vectors. */
@@ -235,6 +204,37 @@ async function searchContextScoped(queryEmbedding, { threshold = 0.4, count = 8,
 }
 
 /**
+ * Recent rows for a channel WITH their stored vectors.
+ *
+ * Lets the channel's own conversation act as the query for finding related
+ * ClickUp work, at zero embedding cost — the vectors were paid for at index
+ * time. Relating by client name does not work here: channels are per-client
+ * while the internal tasks are per-platform-feature, so only ~4% share a name.
+ *
+ * @param {string} externalId
+ * @param {number} [limit=8]
+ * @returns {Promise<Array<{id: string, content: string, embedding: number[]}>>}
+ */
+async function getRecentWithEmbeddings(externalId, limit = 8) {
+  const { data, error } = await supabase
+    .from('knowledge_context')
+    .select('id, content, metadata, created_at, embedding')
+    .eq('source', 'slack')
+    .eq('external_id', externalId)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    logger.error('Failed to fetch rows with embeddings', { error: error.message, externalId });
+    throw error;
+  }
+
+  return data
+    .map((row) => ({ ...row, embedding: parseEmbedding(row.embedding) }))
+    .filter((row) => Array.isArray(row.embedding));
+}
+
+/**
  * Fetch the newest context entries for one channel, newest first.
  * Powers "what's the status here?" style briefings.
  * @param {string} externalId - Channel ID
@@ -282,38 +282,14 @@ async function getRecentAcrossSources(limit = 15) {
   return data;
 }
 
-/**
- * Fetch recent context entries for a specific source and external ID.
- * @param {string} source - 'slack' or 'clickup'
- * @param {string} externalId - Channel ID or Task ID
- * @param {number} [limit=20] - Max entries to return
- * @returns {Promise<Array>}
- */
-async function getRecentContext(source, externalId, limit = 20) {
-  const { data, error } = await supabase
-    .from('knowledge_context')
-    .select('id, content, metadata, created_at')
-    .eq('source', source)
-    .eq('external_id', externalId)
-    .order('created_at', { ascending: false })
-    .limit(limit);
-
-  if (error) {
-    logger.error('Failed to fetch recent context', { error: error.message, source, externalId });
-    throw error;
-  }
-
-  return data;
-}
 
 module.exports = {
   supabase,
   insertContext,
-  searchContext,
   searchContextScoped,
+  countScope,
   getChannelStats,
-  getBoardStats,
   getRecentInChannel,
+  getRecentWithEmbeddings,
   getRecentAcrossSources,
-  getRecentContext,
 };

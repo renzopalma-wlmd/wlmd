@@ -38,6 +38,9 @@ module.exports = {
     // Spaces to sync. Deliberately an allowlist rather than "everything":
     // the Whitelabel Clients space holds ~170 template-seeded client folders
     // whose near-identical onboarding tasks would swamp the vector index.
+    // Tasks completed longer ago than this are dropped: this is a task
+    // sanitizer for pushing open work, not an archive of past work.
+    retentionDays: Number.parseInt(process.env.CLICKUP_RETENTION_DAYS || '60', 10),
     spaceIds: (process.env.CLICKUP_SPACE_IDS || '')
       .split(',')
       .map((id) => id.trim())

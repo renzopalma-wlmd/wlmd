@@ -27,7 +27,7 @@ ClickUp Events ──→ Express Webhook ──→ Gemini Embed ──→ Supaba
 - Node.js 22+
 - A [Supabase](https://supabase.com) project — grab the **service_role** key (Settings → API), not the anon key; the app runs server-side only and the `knowledge_context` table has RLS enabled with no anon-accessible policies
 - A [Slack App](https://api.slack.com/apps) with the following:
-  - Bot Token Scopes: `app_mentions:read`, `channels:history`, `chat:write`, `groups:history`
+  - Bot Token Scopes: `app_mentions:read`, `channels:history`, `chat:write`, `groups:history`, `channels:read`, `groups:read`, `users:read`
   - Event Subscriptions: `app_mention`, `message.channels`, `message.groups`
   - Socket Mode enabled (for local development)
 - A [Google AI Studio](https://aistudio.google.com) API key
@@ -66,7 +66,35 @@ Make sure `SOCKET_MODE=true` in your `.env` file.
 npm run dev
 ```
 
-### 5. Test It
+### 5. Enable the dashboard
+
+Generate a token and set it, or the dashboard stays disabled (it returns `503`
+rather than serving private channel content openly):
+
+```bash
+node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"
+```
+
+Put it in `DASHBOARD_TOKEN`, then open `/dashboard`.
+
+### 6. Load history and tasks
+
+Both jobs are **dry-run by default** — they print what they would do and write
+nothing until you pass `--write`:
+
+```bash
+npm run backfill:slack            # dry run: counts per channel
+npm run backfill:slack -- --write # index the last 30 days incl. thread replies
+npm run sync:clickup              # reconcile CLICKUP_SPACE_IDS
+npm run prune:tasks               # dry run: tasks completed past the window
+```
+
+> **Gemini free tier is the practical limit here:** 1000 embeddings/day and
+> 100/minute. A full backfill of a busy workspace exceeds a day's allowance, and
+> live indexing competes for the same bucket. Enable billing before a large
+> import.
+
+### 7. Test It
 
 1. Add the bot to a Slack channel
 2. Send a few messages in the channel

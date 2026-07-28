@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const config = require('../config');
 const { generateEmbedding } = require('../embeddings');
 const { supabase, insertContext } = require('../supabase');
@@ -45,6 +46,29 @@ function buildTaskText(task) {
 /** Normalized key for collapsing the board's duplicate tasks. */
 function dedupeKey(listId, name) {
   return `${listId}::${String(name).toLowerCase().replace(/\s+/g, ' ').trim()}`;
+}
+
+/**
+ * Fingerprint of the embedded text. Re-embedding a task whose text has not
+ * changed is pure waste — at 100 clients on a daily sync that would be the
+ * dominant cost of the whole system.
+ */
+function contentHash(text) {
+  return crypto.createHash('sha256').update(text).digest('hex').slice(0, 32);
+}
+
+/** Run an async fn over items with bounded concurrency, preserving order. */
+async function mapPool(items, limit, fn) {
+  const out = new Array(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++;
+      out[index] = await fn(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return out;
 }
 
 /**
@@ -116,69 +140,111 @@ async function fetchListTasks(listId) {
  * @param {boolean} [options.replace=true] - Clear the list's existing rows first
  * @returns {Promise<{inserted: number, skipped: number, duplicates: number, failed: number}>}
  */
-async function ingestList(list, tasks, { replace = true } = {}) {
-  const stats = { inserted: 0, skipped: 0, duplicates: 0, failed: 0 };
+async function ingestList(list, tasks, { concurrency = 4, closedWithinDays = config.clickup.retentionDays } = {}) {
+  const stats = { unchanged: 0, inserted: 0, updated: 0, removed: 0, skipped: 0, duplicates: 0, failed: 0 };
 
-  if (replace) {
-    // A board is a snapshot, not an append-only log: statuses and assignees
-    // change, so stale rows would keep answering with outdated state.
-    const { error } = await supabase
-      .from('knowledge_context')
-      .delete()
-      .eq('source', 'clickup')
-      .eq('external_id', list.id);
-    if (error) throw error;
+  // Existing rows for this board, keyed by task so we can tell what changed.
+  const { data: existingRows, error: readError } = await supabase
+    .from('knowledge_context')
+    .select('id, metadata')
+    .eq('source', 'clickup')
+    .eq('external_id', list.id);
+  if (readError) throw readError;
+
+  const existing = new Map();
+  for (const row of existingRows) {
+    if (row.metadata?.task_id) existing.set(row.metadata.task_id, row);
   }
 
-  const seen = new Set();
+  const closedCutoff = Date.now() - closedWithinDays * 86400000;
+  const seenNames = new Set();
+  const keep = [];
 
   for (const task of tasks) {
-    const screen = screenTask(task);
-    if (!screen.keep) {
+    if (!screenTask(task).keep) {
       stats.skipped++;
       continue;
     }
-
+    // Long-closed work is history, not status. Keeping all of it buries the
+    // open items that a briefing is actually about.
+    if (task.date_closed && Number(task.date_closed) < closedCutoff) {
+      stats.skipped++;
+      continue;
+    }
     const key = dedupeKey(list.id, task.name);
-    if (seen.has(key)) {
+    if (seenNames.has(key)) {
       stats.duplicates++;
       continue;
     }
-    seen.add(key);
+    seenNames.add(key);
+    keep.push({ task, content: buildTaskText(task) });
+  }
 
-    const content = buildTaskText(task);
+  // Decide per task: unchanged, changed, or new.
+  const stale = [];
+  const work = [];
+  for (const item of keep) {
+    item.hash = contentHash(item.content);
+    const prior = existing.get(item.task.id);
+    if (prior && prior.metadata?.content_hash === item.hash) {
+      stats.unchanged++;
+      existing.delete(item.task.id);
+      continue;
+    }
+    if (prior) {
+      stale.push(prior.id);
+      existing.delete(item.task.id);
+      item.isUpdate = true;
+    }
+    work.push(item);
+  }
+
+  // Anything still in `existing` is gone from the board, or was closed long
+  // enough ago to drop. Either way it must not keep answering questions.
+  const orphaned = [...existing.values()].map((row) => row.id);
+  const toDelete = [...stale, ...orphaned];
+  if (toDelete.length) {
+    const { error } = await supabase.from('knowledge_context').delete().in('id', toDelete);
+    if (error) throw error;
+    stats.removed = orphaned.length;
+  }
+
+  await mapPool(work, concurrency, async (item) => {
     try {
-      const embedding = await generateEmbedding(content);
+      const embedding = await generateEmbedding(item.content);
       await insertContext({
         source: 'clickup',
         externalId: list.id,
-        authorId: task.assignees?.[0]?.id?.toString() || null,
-        content,
+        authorId: item.task.assignees?.[0]?.id?.toString() || null,
+        content: item.content,
         metadata: {
-          task_id: task.id,
-          custom_id: task.custom_id || null,
+          task_id: item.task.id,
+          custom_id: item.task.custom_id || null,
+          content_hash: item.hash,
           list_id: list.id,
           list_name: list.name,
           folder_name: list.folderName || null,
-          status: task.status?.status ?? task.status ?? null,
-          priority: task.priority?.priority ?? task.priority ?? null,
-          assignees: (task.assignees || []).map((a) => a.username).filter(Boolean),
-          tags: (task.tags || []).map((t) => t.name).filter(Boolean),
-          due_date: task.due_date || null,
-          url: task.url || null,
+          status: item.task.status?.status ?? item.task.status ?? null,
+          priority: item.task.priority?.priority ?? item.task.priority ?? null,
+          assignees: (item.task.assignees || []).map((a) => a.username).filter(Boolean),
+          tags: (item.task.tags || []).map((t) => t.name).filter(Boolean),
+          due_date: item.task.due_date || null,
+          date_closed: item.task.date_closed || null,
+          url: item.task.url || null,
         },
         embedding,
       });
-      stats.inserted++;
+      if (item.isUpdate) stats.updated++;
+      else stats.inserted++;
     } catch (error) {
       stats.failed++;
       logger.error('Failed to ingest ClickUp task', {
-        taskId: task.id,
+        taskId: item.task.id,
         list: list.name,
         error: error.message,
       });
     }
-  }
+  });
 
   return stats;
 }
