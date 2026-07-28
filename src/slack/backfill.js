@@ -92,13 +92,15 @@ async function collectMessages(channelId, { oldest, botUserId, includeThreads = 
  * @param {boolean} [options.dryRun=false]
  * @returns {Promise<{scanned: number, indexable: number, alreadyIndexed: number, inserted: number, failed: number, threads: number}>}
  */
-async function backfillChannel(channelId, { oldest, botUserId, dryRun = false }) {
+async function backfillChannel(channelId, { oldest, botUserId, dryRun = false, limit = Infinity }) {
   const [{ messages, scanned, threads }, seen] = await Promise.all([
     collectMessages(channelId, { oldest, botUserId }),
     existingTimestamps(channelId),
   ]);
 
-  const fresh = messages.filter((m) => !seen.has(m.ts));
+  // Respect the caller's remaining budget so a run can stop deliberately at the
+  // daily allowance instead of failing partway with a quota error.
+  const fresh = messages.filter((m) => !seen.has(m.ts)).slice(0, limit);
   const stats = {
     scanned,
     threads,
@@ -130,6 +132,7 @@ async function backfillChannel(channelId, { oldest, botUserId, dryRun = false })
     } catch (error) {
       stats.failed++;
       logger.error('Backfill insert failed', { channel: channelId, ts: message.ts, error: error.message });
+      if (error.dailyQuotaExhausted) throw error;
     }
   }
 
