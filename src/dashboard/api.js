@@ -4,7 +4,7 @@ const express = require('express');
 const { WebClient } = require('@slack/web-api');
 const config = require('../config');
 const { answerQuestion, briefChannel, analyzeCoherence } = require('../rag');
-const { getChannelStats } = require('../supabase');
+const { getChannelStats, countScope } = require('../supabase');
 const logger = require('../utils/logger');
 
 const slack = new WebClient(config.slack.botToken);
@@ -163,7 +163,14 @@ async function listChannels() {
     getChannelStats(),
   ]);
 
-  const channels = result.channels
+  // Pilot scope: restrict the dashboard to the channels under test. Applied here
+  // so it also governs the briefing/ask/coherence endpoints via isPilotChannel.
+  const pilot = config.dashboard.pilotChannelIds;
+  const visible = pilot.length
+    ? result.channels.filter((c) => pilot.includes(c.id))
+    : result.channels;
+
+  const channels = visible
     .map((c) => {
       const stat = stats.get(c.id) || { rows: 0, lastActivity: null };
       return {
@@ -179,6 +186,69 @@ async function listChannels() {
 
   channelCache = { at: Date.now(), channels };
   return channels;
+}
+
+/**
+ * Is this scope allowed in the dashboard? A pilot allowlist that only hid rows
+ * from the sidebar would still serve any channel to anyone who guessed an id.
+ */
+function isAllowedScope(id) {
+  const pilot = config.dashboard.pilotChannelIds;
+  if (pilot.length === 0) return true;
+  // ClickUp list ids are numeric and reached only through a pilot channel.
+  return /^\d{6,}$/.test(id) || pilot.includes(id);
+}
+
+/**
+ * Explain why a channel has nothing indexed.
+ *
+ * "No activity yet" is wrong for every real case: the channel may be full of
+ * messages that were never backfilled, or full of bot notifications that can
+ * never be indexed. Those need different actions, so they need different words.
+ * Only called for empty channels, so it costs one Slack call on demand.
+ *
+ * @param {string} channelId
+ * @returns {Promise<{kind: string, detail: string}>}
+ */
+async function diagnoseEmptyChannel(channelId) {
+  try {
+    const { messages = [] } = await slack.conversations.history({ channel: channelId, limit: 200 });
+    if (messages.length === 0) {
+      return { kind: 'truly-empty', detail: 'This channel has no messages at all.' };
+    }
+
+    const human = messages.filter(
+      (m) => !m.subtype && !m.bot_id && (m.text || '').trim().length >= 10
+    ).length;
+    const bots = messages.filter((m) => m.bot_id).length;
+
+    // Judge by ratio, not by "zero humans". A notification feed with a handful
+    // of stray human messages is still a notification feed, and calling it
+    // backfillable would promise usefulness that isn't there.
+    if (bots / messages.length > 0.8) {
+      return {
+        kind: 'bot-only',
+        detail:
+          `${bots} of the last ${messages.length} messages here are app notifications` +
+          (human > 0 ? `, with only ${human} from people` : '') +
+          '. Notifications are skipped because they carry no context of their own — ' +
+          'a status change with no task name cannot be attributed to anything. ' +
+          'Board state comes from the ClickUp sync instead.',
+      };
+    }
+    if (human === 0) {
+      return { kind: 'no-substance', detail: 'Recent messages are all too short or system events to be useful.' };
+    }
+    return {
+      kind: 'needs-backfill',
+      detail:
+        `About ${human} of the last ${messages.length} messages are indexable, but none have been imported yet. ` +
+        'The bot only sees messages posted while it is running — run the Slack backfill to load the history.',
+    };
+  } catch (error) {
+    logger.warn('Could not diagnose empty channel', { channelId, error: error.message });
+    return { kind: 'unknown', detail: 'Nothing indexed yet for this channel.' };
+  }
 }
 
 /**
@@ -211,7 +281,21 @@ function createDashboardRouter() {
     try {
       // Boards are deliberately not listed. ClickUp is reached through a
       // channel's related tasks, so the unit of navigation is the project.
-      res.json({ channels: await listChannels() });
+      const [channels, clickupRows] = await Promise.all([
+        listChannels(),
+        countScope({ source: 'clickup' }).catch(() => 0),
+      ]);
+      // The UI must be able to say "this index is partial". Trusting a partial
+      // index as complete is the failure mode this whole system keeps hitting.
+      res.json({
+        channels,
+        index: {
+          slackRows: channels.reduce((n, c) => n + c.indexedMessages, 0),
+          clickupRows,
+          channelsWithData: channels.filter((c) => c.indexedMessages > 0).length,
+          channelsTotal: channels.length,
+        },
+      });
     } catch (error) {
       logger.error('Failed to list channels', { error: error.message });
       res.status(502).json({ error: 'Could not load channels from Slack.' });
@@ -221,6 +305,7 @@ function createDashboardRouter() {
   router.get('/api/channels/:id/briefing', async (req, res) => {
     const { id } = req.params;
     if (!isScopeId(id)) return res.status(400).json({ error: 'Invalid channel or board id.' });
+    if (!isAllowedScope(id)) return res.status(404).json({ error: 'Channel is not in the current pilot scope.' });
 
     const fresh = req.query.refresh === '1';
     const cached = briefingCache.get(id);
@@ -230,6 +315,11 @@ function createDashboardRouter() {
 
     try {
       const result = await briefChannel(id, { kind: scopeKind(id) });
+      // An empty scope is the case most likely to be misread as "broken", so
+      // say precisely why rather than leaving the reader to guess.
+      if (result.empty && scopeKind(id) === 'channel') {
+        result.diagnosis = await diagnoseEmptyChannel(id);
+      }
       const payload = {
         ...result,
         briefing: await resolveSlackTokens(result.briefing),
@@ -250,6 +340,7 @@ function createDashboardRouter() {
   router.get('/api/channels/:id/coherence', async (req, res) => {
     const { id } = req.params;
     if (!isScopeId(id)) return res.status(400).json({ error: 'Invalid channel or board id.' });
+    if (!isAllowedScope(id)) return res.status(404).json({ error: 'Channel is not in the current pilot scope.' });
 
     const fresh = req.query.refresh === '1';
     const cached = coherenceCache.get(id);
@@ -294,6 +385,7 @@ function createDashboardRouter() {
   router.post('/api/channels/:id/ask', async (req, res) => {
     const { id } = req.params;
     if (!isScopeId(id)) return res.status(400).json({ error: 'Invalid channel or board id.' });
+    if (!isAllowedScope(id)) return res.status(404).json({ error: 'Channel is not in the current pilot scope.' });
 
     const question = String(req.body?.question || '').trim();
     if (question.length < 3) return res.status(400).json({ error: 'Ask a longer question.' });

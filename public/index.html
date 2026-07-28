@@ -9,12 +9,12 @@
   :root {
     --bg: #0f1117; --panel: #161923; --panel-2: #1c2030; --line: #262b3a;
     --text: #e6e8ef; --muted: #8b93a7; --accent: #5b8cff;
-    --danger: #ff6b6b; --radius: 10px;
+    --danger: #ff6b6b; --warnish: #d99a2b; --radius: 10px;
   }
   @media (prefers-color-scheme: light) {
     :root {
       --bg: #f6f7f9; --panel: #ffffff; --panel-2: #f1f3f7; --line: #e2e5ec;
-      --text: #1a1d26; --muted: #666e82;
+      --text: #1a1d26; --muted: #666e82; --warnish: #a06c00;
     }
   }
   * { box-sizing: border-box; }
@@ -55,6 +55,11 @@
   .brand { padding: 18px 18px 12px; border-bottom: 1px solid var(--line); }
   .brand h1 { margin: 0; font-size: 15px; letter-spacing: .2px; }
   .brand span { color: var(--muted); font-size: 12px; }
+  .index-status {
+    margin: 0; padding: 8px 18px 10px; font-size: 11.5px; color: var(--muted);
+    border-bottom: 1px solid var(--line); line-height: 1.45;
+  }
+  .warnish { color: var(--warnish); }
   .search { padding: 12px; border-bottom: 1px solid var(--line); }
   .chan-list { overflow-y: auto; flex: 1; padding: 8px; }
   .chan {
@@ -154,6 +159,7 @@
       <h1>PM Insight Hub</h1>
       <span>Project intelligence</span>
     </div>
+    <p class="index-status" id="index-status"></p>
     <div class="search">
       <input id="filter" class="field" type="search" placeholder="Find a channel…" autocomplete="off">
     </div>
@@ -208,6 +214,7 @@
 const $ = (id) => document.getElementById(id);
 let token = sessionStorage.getItem('pmih_token') || '';
 let channels = [];
+let indexInfo = null;
 let current = null;
 
 async function api(pathname, options = {}) {
@@ -300,7 +307,9 @@ function renderChannels() {
   const chanRow = (c) => `
     <button class="chan" data-id="${esc(c.id)}" aria-current="${current === c.id}">
       <span class="row1">${c.isPrivate ? '<span class="lock">🔒</span>' : '#'}${esc(c.name)}</span>
-      <span class="meta">${c.indexedMessages} indexed · ${esc(relative(c.lastActivity))}</span>
+      <span class="meta">${c.indexedMessages
+        ? c.indexedMessages + ' indexed · ' + esc(relative(c.lastActivity))
+        : '<span class="warnish">not indexed</span>'}</span>
     </button>`;
 
   list.innerHTML = shownChannels.map(chanRow).join('');
@@ -328,7 +337,15 @@ async function select(id, forceRefresh = false) {
   try {
     const data = await api('/api/channels/' + id + '/briefing' + (forceRefresh ? '?refresh=1' : ''));
     if (data.empty) {
-      $('brief').innerHTML = '<p class="empty">Nothing indexed for this channel yet. The bot only sees messages posted while it is running — activity here will appear as people talk.</p>';
+      const d = data.diagnosis;
+      const label = d && d.kind === 'bot-only' ? 'Cannot be indexed'
+        : d && d.kind === 'needs-backfill' ? 'Not imported yet'
+        : 'Nothing indexed';
+      $('brief').innerHTML =
+        '<p><strong>' + label + '</strong></p><p class="empty">'
+        + esc((d && d.detail) || 'Nothing indexed for this channel yet.') + '</p>'
+        + (d && d.kind === 'needs-backfill'
+            ? '<p class="empty">Run <code>npm run backfill:slack -- --write</code> to load it.</p>' : '');
       return;
     }
     $('brief').innerHTML = renderMarkdown(data.briefing)
@@ -390,6 +407,19 @@ async function loadCoherence(id, forceRefresh) {
   }
 }
 
+function renderIndexStatus() {
+  const el = $('index-status');
+  if (!indexInfo) { el.innerHTML = ''; return; }
+  const { slackRows, clickupRows, channelsWithData, channelsTotal } = indexInfo;
+  const gaps = channelsTotal - channelsWithData;
+  el.innerHTML =
+    '<span>' + slackRows + ' Slack messages · ' + clickupRows + ' ClickUp tasks indexed</span>'
+    + (gaps > 0
+        ? '<span class="warnish"> · ' + gaps + ' of ' + channelsTotal
+          + ' channels not indexed, so answers here are partial</span>'
+        : '');
+}
+
 async function ask() {
   const input = $('q');
   const question = input.value.trim();
@@ -424,6 +454,8 @@ async function start() {
   try {
     const data = await api('/api/channels');
     channels = data.channels || [];
+    indexInfo = data.index || null;
+    renderIndexStatus();
     renderChannels();
   } catch (err) {
     $('chan-list').innerHTML = '<p class="empty" style="padding:10px 11px">' + esc(err.message) + '</p>';
