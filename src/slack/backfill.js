@@ -1,6 +1,6 @@
 const { WebClient } = require('@slack/web-api');
 const config = require('../config');
-const { generateEmbedding } = require('../embeddings');
+const { generateEmbeddings } = require('../embeddings');
 const { supabase, insertContext } = require('../supabase');
 const logger = require('../utils/logger');
 
@@ -112,9 +112,18 @@ async function backfillChannel(channelId, { oldest, botUserId, dryRun = false, l
 
   if (dryRun) return stats;
 
-  for (const message of fresh) {
+  // Batch the embeddings: the free-tier quota counts requests, so embedding 600
+  // messages one at a time spends 600 of the day's 1000 allowance instead of 6.
+  const vectors = await generateEmbeddings(fresh.map((m) => m.text));
+
+  for (const [index, message] of fresh.entries()) {
+    const embedding = vectors[index];
+    if (!embedding) {
+      stats.failed++;
+      logger.error('Backfill got no vector for message', { channel: channelId, ts: message.ts });
+      continue;
+    }
     try {
-      const embedding = await generateEmbedding(message.text);
       await insertContext({
         source: 'slack',
         externalId: message.channel,
@@ -132,7 +141,6 @@ async function backfillChannel(channelId, { oldest, botUserId, dryRun = false, l
     } catch (error) {
       stats.failed++;
       logger.error('Backfill insert failed', { channel: channelId, ts: message.ts, error: error.message });
-      if (error.dailyQuotaExhausted) throw error;
     }
   }
 

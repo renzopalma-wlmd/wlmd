@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const config = require('../config');
-const { generateEmbedding } = require('../embeddings');
+const { generateEmbeddings } = require('../embeddings');
 const { supabase, insertContext } = require('../supabase');
 const logger = require('../utils/logger');
 
@@ -209,9 +209,17 @@ async function ingestList(list, tasks, { concurrency = 4, closedWithinDays = con
     stats.removed = orphaned.length;
   }
 
-  await mapPool(work, concurrency, async (item) => {
+  // One request per batch rather than one per task — see generateEmbeddings.
+  const vectors = await generateEmbeddings(work.map((item) => item.content));
+
+  await mapPool(work, concurrency, async (item, index) => {
+    const embedding = vectors[index];
+    if (!embedding) {
+      stats.failed++;
+      logger.error('No vector returned for ClickUp task', { taskId: item.task.id, list: list.name });
+      return;
+    }
     try {
-      const embedding = await generateEmbedding(item.content);
       await insertContext({
         source: 'clickup',
         externalId: list.id,
