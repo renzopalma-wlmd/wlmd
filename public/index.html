@@ -55,6 +55,27 @@
   .brand { padding: 18px 18px 12px; border-bottom: 1px solid var(--line); }
   .brand h1 { margin: 0; font-size: 15px; letter-spacing: .2px; }
   .brand span { color: var(--muted); font-size: 12px; }
+  .modes { display: flex; gap: 4px; padding: 10px 12px 0; }
+  .mode-btn {
+    flex: 1; padding: 7px 10px; font-size: 12.5px; font-weight: 600; border-radius: 7px;
+    background: transparent; border: 1px solid var(--line); color: var(--muted);
+  }
+  .mode-btn[aria-current="true"] { background: var(--panel-2); color: var(--text); border-color: var(--accent); }
+  .mode-btn:hover { color: var(--text); }
+
+  .boards-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin-bottom: 22px; }
+  .board-card {
+    text-align: left; background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 14px 15px; color: var(--text);
+  }
+  .board-card:hover { border-color: var(--accent); }
+  .board-card[aria-current="true"] { border-color: var(--accent); background: var(--panel-2); }
+  .board-card-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 9px; }
+  .board-name { font-weight: 600; font-size: 14px; }
+  .board-open { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+  .board-flags { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 9px; }
+  .board-foot { font-size: 11px; color: var(--muted); opacity: .8; }
+
   .index-status {
     margin: 0; padding: 8px 18px 10px; font-size: 11.5px; color: var(--muted);
     border-bottom: 1px solid var(--line); line-height: 1.45;
@@ -211,6 +232,10 @@
       <h1>PM Insight Hub</h1>
       <span>Project intelligence</span>
     </div>
+    <div class="modes">
+      <button class="mode-btn" id="mode-channels" aria-current="true">💬 Slack</button>
+      <button class="mode-btn" id="mode-boards">📋 Boards</button>
+    </div>
     <p class="index-status" id="index-status"></p>
     <div class="search">
       <input id="filter" class="field" type="search" placeholder="Find a channel…" autocomplete="off">
@@ -222,6 +247,13 @@
     <div id="placeholder">
       <div class="head"><h2>Pick a project</h2></div>
       <p class="sub">Select a channel to get a status briefing, the ClickUp tasks it relates to, and where the two disagree.</p>
+    </div>
+
+    <div id="boards-view" hidden>
+      <div class="head"><h2>Boards</h2></div>
+      <div class="sub">Where the work actually sits. Sorted by what needs attention first.</div>
+      <div id="boards-grid" class="boards-grid"></div>
+      <div id="board-detail"></div>
     </div>
 
     <div id="detail" hidden>
@@ -456,7 +488,7 @@ function taskRow(t) {
     + '</div></div>';
 }
 
-function renderTasks(related) {
+function renderTasks(related, showBoardHeads = true) {
   const open = related.filter((t) => !t.isDone);
   const done = related.filter((t) => t.isDone);
 
@@ -464,9 +496,10 @@ function renderTasks(related) {
   if (open.length) {
     const boards = {};
     for (const t of open) (boards[t.board || 'Unsorted'] ||= []).push(t);
+    const groupKeys = Object.keys(boards);
     html += Object.entries(boards)
       .sort((a, b) => b[1].length - a[1].length)
-      .map(([board, items]) =>
+      .map(([board, items]) => groupKeys.length === 1 && !showBoardHeads ? items.map(taskRow).join('') :
         '<p class="board-head">' + esc(board) + '<span class="count">' + items.length + '</span></p>'
         + items.map(taskRow).join('')
       ).join('');
@@ -516,6 +549,75 @@ function renderIndexStatus() {
         ? '<span class="warnish"> · ' + gaps + ' of ' + channelsTotal
           + ' channels not indexed, so answers here are partial</span>'
         : '');
+}
+
+/* ---------- mode switching ---------- */
+let mode = 'channels';
+let boards = [];
+
+function setMode(next) {
+  mode = next;
+  $('mode-channels').setAttribute('aria-current', String(next === 'channels'));
+  $('mode-boards').setAttribute('aria-current', String(next === 'boards'));
+  $('chan-list').hidden = next !== 'channels';
+  $('filter').parentElement.hidden = next !== 'channels';
+  $('boards-view').hidden = next !== 'boards';
+  $('detail').hidden = next !== 'channels' || !current;
+  $('placeholder').hidden = next !== 'channels' || Boolean(current);
+  if (next === 'boards') loadBoards();
+}
+
+function boardCard(b) {
+  const flags = [];
+  if (b.blocked) flags.push('<span class="chip blocked">' + b.blocked + ' blocked</span>');
+  if (b.overdue) flags.push('<span class="chip overdue">' + b.overdue + ' overdue</span>');
+  if (b.urgent) flags.push('<span class="chip urgent">' + b.urgent + ' urgent</span>');
+  if (b.unassigned) flags.push('<span class="chip">' + b.unassigned + ' unassigned</span>');
+  if (!flags.length) flags.push('<span class="chip">clear</span>');
+
+  return '<button class="board-card" data-id="' + esc(b.id) + '">'
+    + '<div class="board-card-top"><span class="board-name">' + esc(b.name) + '</span>'
+    + '<span class="board-open">' + b.open + ' open</span></div>'
+    + '<div class="board-flags">' + flags.join('') + '</div>'
+    + '<div class="board-foot">' + b.tasks + ' indexed · ' + b.done + ' done'
+    + (b.folderName ? ' · ' + esc(b.folderName) : '') + '</div>'
+    + '</button>';
+}
+
+async function loadBoards() {
+  const grid = $('boards-grid');
+  if (!boards.length) grid.innerHTML = '<p class="empty"><span class="spinner"></span>Loading boards…</p>';
+  try {
+    const data = await api('/api/boards');
+    boards = data.boards || [];
+    if (!boards.length) {
+      grid.innerHTML = '<p class="empty">No boards indexed yet. Run <code>npm run sync:clickup</code>.</p>';
+      return;
+    }
+    grid.innerHTML = boards.map(boardCard).join('');
+    for (const el of grid.querySelectorAll('.board-card')) el.onclick = () => openBoard(el.dataset.id);
+  } catch (err) {
+    grid.innerHTML = '<p class="empty">' + esc(err.message) + '</p>';
+  }
+}
+
+async function openBoard(id) {
+  const board = boards.find((b) => b.id === id);
+  for (const el of $('boards-grid').querySelectorAll('.board-card')) {
+    el.setAttribute('aria-current', String(el.dataset.id === id));
+  }
+  const host = $('board-detail');
+  host.innerHTML = '<div class="card"><h3>' + esc(board.name)
+    + '</h3><p class="empty"><span class="spinner"></span>Loading tasks…</p></div>';
+  try {
+    const data = await api('/api/boards/' + id + '/tasks');
+    host.innerHTML = '<div class="card"><h3>' + esc(board.name)
+      + ' <span class="h3-note">' + data.openCount + ' open · ' + data.doneCount + ' done</span></h3>'
+      + '<div id="board-tasks"></div></div>';
+    $('board-tasks').innerHTML = renderTasks(data.tasks, false);
+  } catch (err) {
+    host.innerHTML = '<div class="card"><p class="empty">' + esc(err.message) + '</p></div>';
+  }
 }
 
 async function ask() {
@@ -579,6 +681,8 @@ $('gate-go').onclick = async () => {
 };
 $('token').onkeydown = (e) => { if (e.key === 'Enter') $('gate-go').click(); };
 $('filter').oninput = renderChannels;
+$('mode-channels').onclick = () => setMode('channels');
+$('mode-boards').onclick = () => setMode('boards');
 $('q').onkeydown = (e) => { if (e.key === 'Enter') ask(); };
 $('ask').onclick = ask;
 $('refresh').onclick = () => current && select(current, true);

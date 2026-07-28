@@ -12,6 +12,10 @@ function registerMessageListener(app) {
     // Ignore bot messages, system events, and message edits/deletes
     if (message.subtype || message.bot_id) return;
 
+    // DMs are questions to the bot, not project knowledge. Indexing them would
+    // fill the knowledge base with the questions people asked.
+    if (message.channel_type === 'im') return;
+
     // Ignore very short messages (less than 10 chars — likely not useful context)
     if (!message.text || message.text.trim().length < 10) return;
 

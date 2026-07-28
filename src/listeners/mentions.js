@@ -1,4 +1,5 @@
 const config = require('../config');
+const { createAudience } = require('../slack/audience');
 const { answerQuestion, detectMetaIntent } = require('../rag');
 const { toMrkdwn, channelRef, dateRef, truncateForSlack } = require('../utils/slack-format');
 const logger = require('../utils/logger');
@@ -42,97 +43,159 @@ function buildSourceFooter(sources) {
 }
 
 /**
- * Register the @mention listener.
- * When the bot is mentioned, it runs the RAG pipeline and responds in-thread.
+ * Decide where a reply may be shown.
+ *
+ * Clients are invited into the project channels as guests, so a public reply
+ * puts an internal read of their project in front of them — a briefing saying
+ * "risk of losing them" must never land in the client's own channel. The
+ * delivery mode therefore depends on who is in the room, not on what was asked.
+ *
+ * @returns {Promise<{mode: 'public'|'ephemeral'|'refuse', reason: string}>}
+ */
+async function decideDelivery({ audience, channelId, userId, isDm }) {
+  const asker = await audience.classifyUser(userId);
+
+  // A DM is private by construction — nobody else can read it.
+  if (isDm) {
+    return asker === 'internal'
+      ? { mode: 'public', reason: 'dm' }
+      : { mode: 'refuse', reason: 'external asker' };
+  }
+
+  if (asker !== 'internal') return { mode: 'refuse', reason: 'external asker' };
+
+  const { hasExternals, externals } = await audience.inspectChannel(channelId);
+  return hasExternals
+    ? { mode: 'ephemeral', reason: `${externals} external member(s) present` }
+    : { mode: 'public', reason: 'all-internal channel' };
+}
+
+/**
+ * Register the @mention listener and the DM handler.
+ *
+ * DMs are the recommended way to use this: private, no thread to open, and
+ * cross-channel questions are safe because only one person can read the answer.
+ *
  * @param {import('@slack/bolt').App} app - Slack Bolt app
  */
 function registerMentionListener(app) {
-  app.event('app_mention', async ({ event, say, client }) => {
-    try {
-      // Send immediate thinking feedback in-thread
-      const thinkingMsg = await say({
-        text: '🔍 Searching workspace context and thinking...',
-        thread_ts: event.ts,
-      });
+  const audience = createAudience(app.client);
 
-      // Strip the bot mention from the question text
-      // Bot mentions look like <@U1234567890>
+  async function handleQuestion({ event, client, isDm }) {
+    const channelId = event.channel;
+    const userId = event.user;
+    const threadTs = isDm ? undefined : event.thread_ts || event.ts;
+
+    // Ephemeral messages cannot be edited, so the placeholder-then-update
+    // pattern only works where a real message can be posted.
+    const post = async (text) => {
+      if (delivery.mode === 'ephemeral') {
+        return client.chat.postEphemeral({ channel: channelId, user: userId, text, thread_ts: threadTs });
+      }
+      return client.chat.postMessage({ channel: channelId, text, thread_ts: threadTs });
+    };
+
+    let delivery = { mode: 'ephemeral', reason: 'not yet decided' };
+    let placeholder = null;
+
+    try {
+      delivery = await decideDelivery({ audience, channelId, userId, isDm });
+
+      if (delivery.mode === 'refuse') {
+        logger.warn('Declined to answer', { user: userId, channel: channelId, reason: delivery.reason });
+        await client.chat.postEphemeral({
+          channel: channelId,
+          user: userId,
+          text: "👋 I'm an internal tool for the Whitelabel MD team, so I can't answer here. Your project contact can help with anything you need.",
+          thread_ts: threadTs,
+        });
+        return;
+      }
+
+      logger.info('Answering question', { channel: channelId, mode: delivery.mode, reason: delivery.reason, isDm });
+
+      if (delivery.mode === 'public') {
+        placeholder = await client.chat.postMessage({
+          channel: channelId,
+          text: '🔍 Searching and thinking…',
+          thread_ts: threadTs,
+        });
+      } else {
+        // Ephemeral has no editable handle, so this is feedback only.
+        await post('🔍 Searching and thinking… (only you will see my reply)');
+      }
+
       const question = event.text.replace(/<@[A-Z0-9]+>/g, '').trim();
 
+      const reply = async (text) => {
+        if (placeholder) {
+          try {
+            await client.chat.update({ channel: channelId, ts: placeholder.ts, text });
+            return;
+          } catch (error) {
+            logger.warn('Could not update placeholder, posting fresh', { error: error.message });
+          }
+        }
+        await post(text);
+      };
+
       if (!question || question.length < 3) {
-        // Reuse the thinking message instead of leaving it orphaned in-thread
-        await client.chat.update({
-          channel: event.channel,
-          ts: thinkingMsg.ts,
-          text: "👋 Hey! Ask me a question about your workspace — I'll search through Slack messages and ClickUp tasks to find the answer.",
-        });
+        await reply(
+          isDm
+            ? "👋 Ask me about any channel I'm in — try *what's blocking wlmd-obsidiangenetics?* or *catch me up on internal-mgmt*."
+            : "👋 Ask me about this channel — status, blockers, decisions, or what you missed."
+        );
         return;
       }
 
-      // Questions about how the bot itself works are restricted. This is a
-      // project brain for a channel, not a place to discuss its own internals.
-      if (detectMetaIntent(question) && !config.access.adminUserIds.includes(event.user)) {
-        logger.warn('Blocked technical question from non-admin', {
-          user: event.user,
-          channel: event.channel,
-          question: question.substring(0, 100),
-        });
-        await client.chat.update({
-          channel: event.channel,
-          ts: thinkingMsg.ts,
-          text: "🔒 I don't discuss how I'm built or configured. Ask me about this channel's project instead — status, blockers, decisions, or what you missed.",
-        });
+      if (detectMetaIntent(question) && !config.access.adminUserIds.includes(userId)) {
+        logger.warn('Blocked technical question from non-admin', { user: userId, channel: channelId });
+        await reply(
+          "🔒 I don't discuss how I'm built or configured. Ask me about the project instead — status, blockers, decisions, or what you missed."
+        );
         return;
       }
 
-      // Run RAG pipeline, scoped to the channel this question came from.
-      const { answer, sources } = await answerQuestion(question, { channelId: event.channel });
-
-      // Gemini emits Markdown regardless of prompting, so normalize to mrkdwn
-      // before it reaches Slack — otherwise **bold** shows its asterisks.
-      const reply = `${truncateForSlack(toMrkdwn(answer))}${buildSourceFooter(sources)}`;
-
-      // Update the thinking message with the actual answer
-      try {
-        await client.chat.update({
-          channel: event.channel,
-          ts: thinkingMsg.ts,
-          text: reply,
-        });
-      } catch (updateError) {
-        // If update fails, post as a new message
-        logger.warn('Failed to update thinking message, posting new reply', { error: updateError.message });
-        await say({
-          text: reply,
-          thread_ts: event.ts,
-        });
-      }
-
+      // A DM has no project of its own, so it searches across everything the
+      // bot can see. In a channel the answer stays scoped to that channel.
+      const { answer, sources } = await answerQuestion(question, { channelId: isDm ? null : channelId });
+      await reply(`${truncateForSlack(toMrkdwn(answer))}${buildSourceFooter(sources)}`);
     } catch (error) {
-      logger.error('Failed to handle @mention', {
-        error: error.message,
-        user: event.user,
-        channel: event.channel,
-      });
+      logger.error('Failed to handle question', { error: error.message, user: userId, channel: channelId });
 
-      // Distinguish "the AI provider is busy" from a real fault — the first is
-      // worth retrying, the second isn't, and a generic message hides which.
       const status = typeof error?.status === 'number'
         ? error.status
         : Number.parseInt((String(error?.message || '').match(/"code"\s*:\s*(\d{3})/) || [])[1], 10);
-      // A daily quota breach is not transient — telling someone to "try again in
-      // a moment" would be false. Say what actually has to happen.
+
       const text = error?.dailyQuotaExhausted
-        ? "📉 I've hit today's AI usage limit, so I can't search right now. This resets tomorrow. Ask me to *list* the recent messages and I can still answer that without searching."
+        ? "📉 I've hit today's AI usage limit, so I can't search right now. It resets tomorrow. Ask me to *list* the recent messages and I can still answer that without searching."
         : status === 503 || status === 429
           ? '⏳ The AI model is overloaded right now and did not recover after several retries. Please ask again in a moment.'
           : '❌ Sorry, I hit an error while processing your question. Please try again.';
 
-      await say({ text, thread_ts: event.ts });
+      try {
+        await post(text);
+      } catch (postError) {
+        logger.error('Could not deliver error message', { error: postError.message });
+      }
     }
+  }
+
+  app.event('app_mention', async ({ event, client }) => {
+    await handleQuestion({ event, client, isDm: false });
   });
 
-  logger.info('Mention listener registered');
+  // Direct messages. Bolt delivers these as `message` events with channel_type
+  // im; they are questions, never content to index.
+  app.message(async ({ message, client, next }) => {
+    if (message.channel_type !== 'im' || message.subtype || message.bot_id) {
+      await next();
+      return;
+    }
+    await handleQuestion({ event: message, client, isDm: true });
+  });
+
+  logger.info('Mention + DM listeners registered');
 }
 
 module.exports = { registerMentionListener, buildSourceFooter };

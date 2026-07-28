@@ -4,7 +4,7 @@ const express = require('express');
 const { WebClient } = require('@slack/web-api');
 const config = require('../config');
 const { answerQuestion, briefChannel, analyzeCoherence } = require('../rag');
-const { getChannelStats, countScope } = require('../supabase');
+const { getChannelStats, countScope, getBoards, getRecentInChannel } = require('../supabase');
 const logger = require('../utils/logger');
 
 const slack = new WebClient(config.slack.botToken);
@@ -313,6 +313,52 @@ function createDashboardRouter() {
     } catch (error) {
       logger.error('Failed to list channels', { error: error.message });
       res.status(502).json({ error: 'Could not load channels from Slack.' });
+    }
+  });
+
+  // Boards are a deliberate second mode, not mixed into the channel list: the
+  // question "where is the work" is different from "what is the team saying".
+  router.get('/api/boards', async (req, res) => {
+    try {
+      res.json({ boards: await getBoards() });
+    } catch (error) {
+      logger.error('Failed to list boards', { error: error.message });
+      res.status(502).json({ error: 'Could not load boards.' });
+    }
+  });
+
+  router.get('/api/boards/:id/tasks', async (req, res) => {
+    const { id } = req.params;
+    if (!/^\d{6,}$/.test(id)) return res.status(400).json({ error: 'Invalid board id.' });
+
+    try {
+      const rows = await getRecentInChannel(id, 300);
+      const tasks = rows.map((row) => {
+        const status = row.metadata?.status || null;
+        const isDone = DONE_STATUSES.has(String(status || '').toLowerCase());
+        const due = Number(row.metadata?.due_date);
+        return {
+          ref: row.metadata?.custom_id || row.metadata?.task_id || null,
+          title: row.content.split('\n')[0].replace(/^\[[^\]]+\]\s*/, ''),
+          status,
+          priority: row.metadata?.priority || null,
+          assignees: row.metadata?.assignees || [],
+          dueDate: row.metadata?.due_date || null,
+          url: row.metadata?.url || null,
+          board: row.metadata?.list_name || null,
+          isDone,
+          overdue: !isDone && Number.isFinite(due) && due > 0 && due < Date.now(),
+        };
+      });
+      tasks.sort((a, b) => taskRank(a) - taskRank(b));
+      res.json({
+        tasks,
+        openCount: tasks.filter((t) => !t.isDone).length,
+        doneCount: tasks.filter((t) => t.isDone).length,
+      });
+    } catch (error) {
+      logger.error('Failed to load board tasks', { boardId: id, error: error.message });
+      res.status(502).json({ error: 'Could not load that board.' });
     }
   });
 
