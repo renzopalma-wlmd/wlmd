@@ -83,8 +83,10 @@ Both jobs are **dry-run by default** — they print what they would do and write
 nothing until you pass `--write`:
 
 ```bash
-npm run backfill:slack            # dry run: counts per channel
-npm run backfill:slack -- --write # index the last 30 days incl. thread replies
+npm run backfill:slack                          # dry run: counts per channel
+npm run backfill:slack -- --write               # index last 30 days incl. thread replies
+npm run backfill:slack -- --channels a,b --write # only these channels
+npm run backfill:slack -- --max 900 --write     # stop after 900, to fit a daily quota
 npm run sync:clickup              # reconcile CLICKUP_SPACE_IDS
 npm run prune:tasks               # dry run: tasks completed past the window
 ```

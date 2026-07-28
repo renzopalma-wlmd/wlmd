@@ -10,7 +10,9 @@ const EMBEDDING_DIMENSIONS = 1536;
 // The free tier allows 100 embed requests per MINUTE (not per day). Exceeding
 // it returns 429 with a ~30s retryDelay. Every caller shares this limiter, so a
 // bulk sync and live Slack indexing can't collectively overrun the quota.
-const RATE_LIMIT_PER_MIN = 90;
+// Free tier is 100/min. Paid tiers are far higher, so this is configurable —
+// otherwise enabling billing changes nothing because our own limiter is the cap.
+const RATE_LIMIT_PER_MIN = Number.parseInt(process.env.EMBEDDING_RATE_PER_MIN || '90', 10);
 const RATE_WINDOW_MS = 60_000;
 const MAX_ATTEMPTS = 5;
 
