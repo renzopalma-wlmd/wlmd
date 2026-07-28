@@ -47,6 +47,13 @@ module.exports = {
       .filter(Boolean),
   },
   dashboard: {
+    // Pilot scope. When set, the dashboard lists ONLY these channels — the
+    // Slack bot is unaffected and still answers wherever it is mentioned.
+    // Unset means list every channel the bot can see.
+    pilotChannelIds: (process.env.PILOT_CHANNEL_IDS || '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean),
     // Shared secret for the web dashboard. It serves private client-channel
     // content over the internet, so the API refuses to run without it rather
     // than defaulting to open.
