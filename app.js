@@ -56,8 +56,10 @@ if (config.slack.socketMode) {
 // ==========================================================
 // Register Slack Listeners
 // ==========================================================
-registerMessageListener(slackApp);
+// Order matters: the mention/DM listener must see `message` events first so it
+// can claim DMs before the indexer looks at them.
 registerMentionListener(slackApp);
+registerMessageListener(slackApp);
 
 // ==========================================================
 // Start Server

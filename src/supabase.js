@@ -75,6 +75,59 @@ async function getChannelStats() {
 
 
 /**
+ * Indexed ClickUp boards with a status rollup, for the Boards view.
+ * Derived from what has actually been synced, so the UI never offers a board
+ * with nothing behind it.
+ * @returns {Promise<Array>}
+ */
+async function getBoards() {
+  const { data, error } = await supabase
+    .from('knowledge_context')
+    .select('external_id, created_at, metadata')
+    .eq('source', 'clickup');
+
+  if (error) {
+    logger.error('Failed to load boards', { error: error.message });
+    throw error;
+  }
+
+  const DONE = new Set(['complete', 'completed', 'closed', 'done', 'cancelled', 'canceled']);
+  const boards = new Map();
+
+  for (const row of data) {
+    const id = row.metadata?.list_id || row.external_id;
+    if (!id) continue;
+    const entry = boards.get(id) || {
+      id,
+      name: row.metadata?.list_name || id,
+      folderName: row.metadata?.folder_name || null,
+      tasks: 0, open: 0, done: 0, blocked: 0, overdue: 0, unassigned: 0, urgent: 0,
+      lastActivity: null,
+    };
+
+    const status = String(row.metadata?.status || '').toLowerCase();
+    const isDone = DONE.has(status);
+    entry.tasks++;
+    if (isDone) entry.done++;
+    else {
+      entry.open++;
+      if (status === 'blocked') entry.blocked++;
+      if (row.metadata?.priority === 'urgent') entry.urgent++;
+      if (!(row.metadata?.assignees || []).length) entry.unassigned++;
+      const due = Number(row.metadata?.due_date);
+      if (Number.isFinite(due) && due > 0 && due < Date.now()) entry.overdue++;
+    }
+    if (!entry.lastActivity || row.created_at > entry.lastActivity) entry.lastActivity = row.created_at;
+    boards.set(id, entry);
+  }
+
+  // Most attention-worthy first: blocked, then overdue, then size.
+  return [...boards.values()].sort(
+    (a, b) => b.blocked - a.blocked || b.overdue - a.overdue || b.open - a.open
+  );
+}
+
+/**
  * How many rows exist in a scope, regardless of what retrieval returned.
  *
  * Without this the model cannot tell the difference between "these are all the
@@ -288,6 +341,7 @@ module.exports = {
   insertContext,
   searchContextScoped,
   countScope,
+  getBoards,
   getChannelStats,
   getRecentInChannel,
   getRecentWithEmbeddings,
