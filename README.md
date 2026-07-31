@@ -11,6 +11,9 @@ ClickUp Events ──→ Express Webhook ──→ Gemini Embed ──→ Supaba
 @mention Question ──→ Embed Query ──→ Vector Search ──→ RAG Pipeline ──→ Gemini Answer ──→ Slack Reply
 ```
 
+> **Using the bot:** [`docs/BOT-RULES.md`](docs/BOT-RULES.md) — who it talks to,
+> where its answers appear, what it knows, and how to phrase a question.
+>
 > **Architecture deep-dive:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how the read
 > and reply paths actually work, diagrams, the data model, known limitations, and a map of
 > the docs still to be written.
