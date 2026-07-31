@@ -1,5 +1,6 @@
 const config = require('../config');
 const { createAudience } = require('../slack/audience');
+const { countScope } = require('../supabase');
 const { answerQuestion, detectMetaIntent } = require('../rag');
 const { toMrkdwn, channelRef, dateRef, truncateForSlack } = require('../utils/slack-format');
 const logger = require('../utils/logger');
@@ -40,6 +41,66 @@ function buildSourceFooter(sources) {
   }
 
   return `\n\n_${parts.filter(Boolean).join(' · ')}_`;
+}
+
+// Channels the bot can see, cached — used to resolve a channel named inside a
+// question.
+const CHANNEL_LIST_TTL_MS = 5 * 60 * 1000;
+let channelList = { at: 0, channels: [] };
+
+async function listVisibleChannels(client) {
+  if (channelList.channels.length && Date.now() - channelList.at < CHANNEL_LIST_TTL_MS) {
+    return channelList.channels;
+  }
+  try {
+    const res = await client.users.conversations({
+      types: 'public_channel,private_channel',
+      exclude_archived: true,
+      limit: 200,
+    });
+    channelList = { at: Date.now(), channels: res.channels.map((c) => ({ id: c.id, name: c.name })) };
+  } catch (error) {
+    logger.warn('Could not list channels for name resolution', { error: error.message });
+  }
+  return channelList.channels;
+}
+
+/**
+ * If the question names a channel, answer about THAT channel.
+ *
+ * Scoping to wherever the question happened to be typed is right for privacy but
+ * obtuse in practice: "give me details about obsidiangenetics" asked from
+ * another channel was refused even though that channel is fully indexed. Naming
+ * a channel is an explicit request, and delivery is already restricted to the
+ * asker, so honour it.
+ *
+ * @returns {Promise<{id: string, name: string}|null>}
+ */
+async function resolveNamedChannel(question, client, currentChannelId) {
+  const channels = await listVisibleChannels(client);
+  if (!channels.length) return null;
+
+  // Typing #channel in Slack sends <#C123|name>.
+  const linked = question.match(/<#([A-Z0-9]+)(?:\|[^>]*)?>/);
+  if (linked) {
+    const hit = channels.find((c) => c.id === linked[1]);
+    if (hit && hit.id !== currentChannelId) return hit;
+  }
+
+  // Otherwise match on the channel name as plain text. Longest name first so
+  // "wlmd-internal-design-team" wins over a shorter partial.
+  const haystack = question.toLowerCase();
+  const byLength = [...channels].sort((a, b) => b.name.length - a.name.length);
+  for (const channel of byLength) {
+    if (channel.id === currentChannelId) continue;
+    const name = channel.name.toLowerCase();
+    // Require a distinctive name so a word like "testing" doesn't hijack a
+    // question that merely happens to contain it.
+    if (name.length < 6) continue;
+    const stem = name.replace(/^wlmd-/, '');
+    if (haystack.includes(name) || (stem.length >= 6 && haystack.includes(stem))) return channel;
+  }
+  return null;
 }
 
 /**
@@ -157,9 +218,31 @@ function registerMentionListener(app) {
       }
 
       // A DM has no project of its own, so it searches across everything the
-      // bot can see. In a channel the answer stays scoped to that channel.
-      const { answer, sources } = await answerQuestion(question, { channelId: isDm ? null : channelId });
-      await reply(`${truncateForSlack(toMrkdwn(answer))}${buildSourceFooter(sources)}`);
+      // bot can see. In a channel the answer stays scoped to that channel —
+      // unless the question names a different one.
+      const named = await resolveNamedChannel(question, client, channelId);
+      const target = named ? named.id : isDm ? null : channelId;
+      if (named) logger.info('Question retargeted to a named channel', { from: channelId, to: named.name });
+
+      // An empty scope reads as "the bot is broken" unless it says otherwise.
+      // Distinguish "nothing indexed here" from "indexed, but no match".
+      if (target) {
+        const indexed = await countScope({ externalId: target });
+        if (indexed === 0) {
+          const where = named ? `<#${named.id}>` : 'this channel';
+          await reply(
+            `📭 I have nothing indexed for ${where} yet, so I can't answer about it.\n\n` +
+              'I only see messages posted while I\'m running, and this channel has never been imported. ' +
+              'Ask me about a channel I already cover, or ask an admin to run the Slack backfill.'
+          );
+          return;
+        }
+      }
+
+      const { answer, sources } = await answerQuestion(question, { channelId: target });
+
+      const prefix = named ? `_Answering about <#${named.id}>._\n\n` : '';
+      await reply(`${prefix}${truncateForSlack(toMrkdwn(answer))}${buildSourceFooter(sources)}`);
     } catch (error) {
       logger.error('Failed to handle question', { error: error.message, user: userId, channel: channelId });
 
